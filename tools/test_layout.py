@@ -179,8 +179,8 @@ def test_coloured_kscreen_doctor_output():
         _paint("Output: ") + "2 DP-3 bbbb",
         "\t" + _paint("enabled"),
         "\t" + _paint("priority ") + "2",
-        _paint("\tGeometry: ", "01;33") + "1536,0 864x1536",
-        _paint("\tRotation: ", "01;33") + "2",
+        _paint("\tGeometry: ", "01;33") + "840,864 864x1536",
+        _paint("\tRotation: ", "01;33") + "8",
         _paint("Output: ") + "3 HDMI-A-2 cccc",
         "\t" + _paint("disabled", "01;31"),
         "\t" + _paint("priority ") + "3",
@@ -217,6 +217,10 @@ def test_kscreen_json_scale_and_rotation():
     assert (screens[0]["width"], screens[0]["height"]) == (1707, 1067)
     assert screens[0]["edp"]
 
+    # Melchior, captured from kscreen-doctor -j. size is already oriented:
+    # DP-3 is rotation 8 (270°) with width 1080 and height 1920. Dividing by
+    # the 1.25 scale is the Geometry line (864x1536). Swapping again because
+    # rotation is 8 produced the bogus landscape 1536x864 mini panel.
     melchior = json.dumps({
         "outputs": [
             {
@@ -234,28 +238,21 @@ def test_kscreen_json_scale_and_rotation():
                 "enabled": True,
                 "connected": True,
                 "priority": 2,
-                "pos": {"x": 1536, "y": 0},
-                "size": {"width": 1920, "height": 1080},
+                "pos": {"x": 840, "y": 864},
+                "size": {"width": 1080, "height": 1920},
                 "scale": 1.25,
-                "rotation": 2,
-            },
-            {
-                "name": "HDMI-A-2",
-                "enabled": False,
-                "connected": True,
-                "priority": 3,
-                "pos": {"x": 0, "y": 0},
-                "size": {"width": 1920, "height": 1080},
-                "scale": 1,
-                "rotation": 1,
+                "rotation": 8,
             },
         ]
     })
     screens = layout.parse_kscreen_json(melchior)
-    assert [(s["name"], s["width"], s["height"], s["landscape"]) for s in screens] == [
-        ("HDMI-A-1", 1536, 864, True),
-        ("DP-3", 864, 1536, False),
+    assert [(s["name"], s["x"], s["y"], s["width"], s["height"], s["landscape"]) for s in screens] == [
+        ("HDMI-A-1", 0, 0, 1536, 864, True),
+        ("DP-3", 840, 864, 864, 1536, False),
     ]
+    plan = layout.build_plan(screens, {layout.CPU}, set(), "file:///w.png", exists_all, batteries=[])
+    assert [p["role"] for p in plan["panels"]] == ["primary-status", "primary-dock"]
+    assert "DP-3 864x1536 portrait secondary" in layout.describe_screens(plan)
     assert not layout.is_laptop(screens, batteries=["BAT0"])
 
 
