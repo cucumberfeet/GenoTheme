@@ -143,6 +143,135 @@ def test_filters_missing_apps_sensors_and_laptop():
     assert "applications:systemsettings.desktop" in text
 
 
+def _paint(text, code="01;32"):
+    return f"\x1b[{code}m{text}\x1b[0;0m"
+
+
+def test_coloured_kscreen_doctor_output():
+    # Plasma 6 colours the labels even when stdout is a pipe. Without stripping,
+    # parse_kscreen_text used to match nothing and silently use default_screen().
+    casper = "\n".join([
+        _paint("Output: ") + "1 eDP-1 c5b9ff50-1111-2222-3333-444444444444",
+        "\t" + _paint("enabled"),
+        "\t" + _paint("connected"),
+        "\t" + _paint("priority ") + "1",
+        _paint("\tGeometry: ", "01;33") + "0,0 1707x1067",
+        _paint("\tScale: ", "01;33") + "1.5",
+        _paint("\tRotation: ", "01;33") + "1",
+    ])
+    screens = layout.parse_kscreen_text(casper)
+    assert len(screens) == 1
+    assert screens[0]["name"] == "eDP-1"
+    assert (screens[0]["width"], screens[0]["height"]) == (1707, 1067)
+    assert screens[0]["edp"] and screens[0]["primary"] and screens[0]["landscape"]
+    assert layout.is_laptop(screens, batteries=[])
+    plan = layout.build_plan(screens, {layout.CPU}, set(), "file:///w.png", exists_all, batteries=["BAT0"])
+    assert plan["laptop"]
+    assert "BAT0" in plan["laptopReason"]
+    tray = next(w for w in plan["panels"][0]["widgets"] if w["plugin"] == "org.kde.plasma.systemtray")
+    assert "org.kde.plasma.battery" in tray["config"]["General"]["shownItems"]
+
+    melchior = "\n".join([
+        _paint("Output: ") + "1 HDMI-A-1 aaaa",
+        "\t" + _paint("enabled"),
+        "\t" + _paint("priority ") + "1",
+        _paint("\tGeometry: ", "01;33") + "0,0 1536x864",
+        _paint("Output: ") + "2 DP-3 bbbb",
+        "\t" + _paint("enabled"),
+        "\t" + _paint("priority ") + "2",
+        _paint("\tGeometry: ", "01;33") + "1536,0 864x1536",
+        _paint("\tRotation: ", "01;33") + "2",
+        _paint("Output: ") + "3 HDMI-A-2 cccc",
+        "\t" + _paint("disabled", "01;31"),
+        "\t" + _paint("priority ") + "3",
+        _paint("\tGeometry: ", "01;33") + "0,0 1920x1080",
+    ])
+    screens = layout.parse_kscreen_text(melchior)
+    assert [s["name"] for s in screens] == ["HDMI-A-1", "DP-3"]
+    assert screens[0]["landscape"] and screens[0]["primary"]
+    assert not screens[1]["landscape"]
+    plan = layout.build_plan(screens, {layout.CPU}, set(), "file:///w.png", exists_all, batteries=[])
+    assert [p["role"] for p in plan["panels"]] == ["primary-status", "primary-dock"]
+    assert not plan["laptop"]
+    text = layout.describe_screens(plan)
+    assert "HDMI-A-1 1536x864 landscape primary" in text
+    assert "DP-3 864x1536 portrait secondary" in text
+
+
+def test_kscreen_json_scale_and_rotation():
+    casper = json.dumps({
+        "outputs": [{
+            "name": "eDP-1",
+            "enabled": True,
+            "connected": True,
+            "priority": 1,
+            "pos": {"x": 0, "y": 0},
+            "size": {"width": 2560, "height": 1600},
+            "scale": 1.5,
+            "rotation": 1,
+        }]
+    })
+    screens = layout.parse_kscreen_json(casper)
+    assert len(screens) == 1
+    assert screens[0]["name"] == "eDP-1"
+    assert (screens[0]["width"], screens[0]["height"]) == (1707, 1067)
+    assert screens[0]["edp"]
+
+    melchior = json.dumps({
+        "outputs": [
+            {
+                "name": "HDMI-A-1",
+                "enabled": True,
+                "connected": True,
+                "priority": 1,
+                "pos": {"x": 0, "y": 0},
+                "size": {"width": 1920, "height": 1080},
+                "scale": 1.25,
+                "rotation": 1,
+            },
+            {
+                "name": "DP-3",
+                "enabled": True,
+                "connected": True,
+                "priority": 2,
+                "pos": {"x": 1536, "y": 0},
+                "size": {"width": 1920, "height": 1080},
+                "scale": 1.25,
+                "rotation": 2,
+            },
+            {
+                "name": "HDMI-A-2",
+                "enabled": False,
+                "connected": True,
+                "priority": 3,
+                "pos": {"x": 0, "y": 0},
+                "size": {"width": 1920, "height": 1080},
+                "scale": 1,
+                "rotation": 1,
+            },
+        ]
+    })
+    screens = layout.parse_kscreen_json(melchior)
+    assert [(s["name"], s["width"], s["height"], s["landscape"]) for s in screens] == [
+        ("HDMI-A-1", 1536, 864, True),
+        ("DP-3", 864, 1536, False),
+    ]
+    assert not layout.is_laptop(screens, batteries=["BAT0"])
+
+
+def test_battery_marks_a_single_non_edp_screen_as_a_laptop():
+    screens = [{
+        "name": "Unknown-1", "index": 0, "x": 0, "y": 0, "width": 1920, "height": 1080,
+        "primary": True, "landscape": True, "edp": False,
+    }]
+    assert not layout.is_laptop(screens, batteries=[])
+    assert layout.is_laptop(screens, batteries=["BAT0"])
+    plan = layout.build_plan(screens, set(), set(), "file:///w.png", exists_all, batteries=["BAT0"])
+    assert plan["laptop"]
+    tray = next(w for w in plan["panels"][0]["widgets"] if w["plugin"] == "org.kde.plasma.systemtray")
+    assert "org.kde.plasma.battery" in tray["config"]["General"]["extraItems"]
+
+
 def test_melchior_portrait_has_no_panel():
     screens = layout.parse_kscreen_text("""
 Output: 1 HDMI-A-1 aaa
@@ -322,6 +451,8 @@ def test_install_script_does_not_touch_panels_until_apply():
         assert "genotheme-logo" in applets
         assert "org.kde.plasma.battery" not in applets
         assert "FillMode=2" in (home / ".config/kscreenlockerrc").read_text(encoding="utf-8")
+        assert "Screens (fallback): unknown 1920x1080 landscape primary" in out
+        assert "kscreen-doctor returned nothing usable" in out
         assert "Backed up the existing panel config" in out
         assert "Kvantum is not installed" in out or "kvantum" in out.lower()
         assert (home / ".local/share/genotheme/panel-backup/BACKUP_INFO.txt").is_file()

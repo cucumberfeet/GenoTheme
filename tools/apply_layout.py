@@ -143,10 +143,29 @@ def get_key(lines, key):
     return None
 
 
+# kscreen-doctor -o colours its labels even when stdout is not a terminal.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text):
+    return ANSI_RE.sub("", text or "")
+
+
+def _finish_screens(outputs):
+    enabled = [o for o in outputs if o.get("enabled") and o.get("width") and o.get("height")]
+    enabled.sort(key=lambda o: (o["priority"], o["name"]))
+    for i, output in enumerate(enabled):
+        output["index"] = i
+        output["primary"] = i == 0
+        output["landscape"] = output["width"] >= output["height"]
+        output["edp"] = "edp" in output["name"].lower()
+    return enabled
+
+
 def parse_kscreen_text(text):
     outputs = []
     current = None
-    for line in text.splitlines():
+    for line in strip_ansi(text).splitlines():
         m = re.match(r"Output:\s+\d+\s+(\S+)", line)
         if m:
             if current:
@@ -179,14 +198,69 @@ def parse_kscreen_text(text):
             current["height"] = int(m.group(4))
     if current:
         outputs.append(current)
-    enabled = [o for o in outputs if o["enabled"] and o["width"] and o["height"]]
-    enabled.sort(key=lambda o: (o["priority"], o["name"]))
-    for i, o in enumerate(enabled):
-        o["index"] = i
-        o["primary"] = i == 0
-        o["landscape"] = o["width"] >= o["height"]
-        o["edp"] = "edp" in o["name"].lower()
-    return enabled
+    return _finish_screens(outputs)
+
+
+def _rotated(width, height, rotation):
+    if isinstance(rotation, str):
+        swap = rotation.lower() in {"left", "right", "2", "8"}
+    else:
+        swap = int(rotation or 1) in {2, 8}
+    return (height, width) if swap else (width, height)
+
+
+def parse_kscreen_json(text):
+    """Parse `kscreen-doctor -j` (KScreen::ConfigSerializer).
+
+    `size` is the current mode in hardware pixels. The on-screen rectangle is
+    that size divided by `scale`, with width and height swapped for a 90° or
+    270° rotation. That matches the Geometry line of `kscreen-doctor -o`.
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    raw_outputs = data.get("outputs") if isinstance(data, dict) else data
+    if not isinstance(raw_outputs, list):
+        return []
+    outputs = []
+    for index, output in enumerate(raw_outputs):
+        if not isinstance(output, dict):
+            continue
+        if output.get("connected") is False:
+            continue
+        name = str(output.get("name") or "")
+        if not name:
+            continue
+        size = output.get("size") or {}
+        pos = output.get("pos") or output.get("position") or {}
+        try:
+            scale = float(output.get("scale") or 1) or 1.0
+            width = int(round(float(size.get("width") or 0) / scale))
+            height = int(round(float(size.get("height") or 0) / scale))
+        except (TypeError, ValueError):
+            continue
+        width, height = _rotated(width, height, output.get("rotation", 1))
+        priority = output.get("priority") or 0
+        try:
+            priority = int(priority)
+        except (TypeError, ValueError):
+            priority = 0
+        if priority <= 0:
+            priority = 1000 + index
+        enabled = output.get("enabled")
+        if enabled is None:
+            enabled = True
+        outputs.append({
+            "name": name,
+            "enabled": bool(enabled),
+            "priority": priority,
+            "x": int(pos.get("x") or 0),
+            "y": int(pos.get("y") or 0),
+            "width": width,
+            "height": height,
+        })
+    return _finish_screens(outputs)
 
 
 def default_screen():
@@ -202,29 +276,106 @@ def default_screen():
         "primary": True,
         "landscape": True,
         "edp": False,
+        "source": "fallback",
     }]
 
 
-def detect_screens():
-    override = os.environ.get("GENOTHEME_SCREEN_TEXT")
-    if override:
-        return parse_kscreen_text(Path(override).read_text(encoding="utf-8")) or default_screen()
+def _tag(screens, source):
+    for screen in screens:
+        screen["source"] = source
+    return screens
+
+
+def _run_kscreen(args):
     try:
         proc = subprocess.run(
-            ["kscreen-doctor", "-o"],
+            args,
             check=False,
             capture_output=True,
             text=True,
             timeout=8,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return default_screen()
-    parsed = parse_kscreen_text(proc.stdout or "")
-    return parsed or default_screen()
+        return None
+    if proc.returncode != 0 and not (proc.stdout or "").strip():
+        return None
+    return proc.stdout or ""
 
 
-def is_laptop(screens):
-    return len(screens) == 1 and bool(screens[0].get("edp"))
+def detect_screens():
+    text_override = os.environ.get("GENOTHEME_SCREEN_TEXT")
+    if text_override:
+        parsed = parse_kscreen_text(Path(text_override).read_text(encoding="utf-8", errors="replace"))
+        return _tag(parsed, "text") if parsed else default_screen()
+    json_override = os.environ.get("GENOTHEME_SCREEN_JSON")
+    if json_override:
+        parsed = parse_kscreen_json(Path(json_override).read_text(encoding="utf-8", errors="replace"))
+        return _tag(parsed, "json") if parsed else default_screen()
+    raw = _run_kscreen(["kscreen-doctor", "-j"])
+    if raw:
+        parsed = parse_kscreen_json(raw)
+        if parsed:
+            return _tag(parsed, "json")
+    raw = _run_kscreen(["kscreen-doctor", "-o"])
+    if raw:
+        parsed = parse_kscreen_text(raw)
+        if parsed:
+            return _tag(parsed, "text")
+    return default_screen()
+
+
+def detect_batteries():
+    """Names of /sys/class/power_supply/BAT* supplies, or GENOTHEME_BATTERIES if set.
+
+    An empty GENOTHEME_BATTERIES means "this machine has no battery".
+    """
+    override = os.environ.get("GENOTHEME_BATTERIES")
+    if override is not None:
+        return [name for name in override.split(",") if name]
+    root = Path("/sys/class/power_supply")
+    if not root.is_dir():
+        return []
+    found = []
+    for supply in sorted(root.iterdir()):
+        if not supply.name.upper().startswith("BAT"):
+            continue
+        type_file = supply / "type"
+        if type_file.is_file():
+            try:
+                kind = type_file.read_text(encoding="utf-8", errors="replace").strip().lower()
+            except OSError:
+                kind = "battery"
+            if kind and kind != "battery":
+                continue
+        found.append(supply.name)
+    return found
+
+
+def laptop_decision(screens, batteries):
+    """A single eDP panel is a laptop. A single screen plus BAT* is too.
+
+    Extra monitors (a docked laptop, or Melchior) do not get a tray battery.
+    """
+    batteries = list(batteries or [])
+    if len(screens) != 1:
+        why = "no screens" if not screens else f"{len(screens)} screens"
+        return False, why
+    screen = screens[0]
+    name = screen.get("name") or "screen"
+    if screen.get("edp") and batteries:
+        return True, f"single {name} and battery {', '.join(batteries)}"
+    if screen.get("edp"):
+        return True, f"single {name}"
+    if batteries:
+        return True, f"single {name} and battery {', '.join(batteries)}"
+    return False, f"single {name}, no eDP connector and no battery"
+
+
+def is_laptop(screens, batteries=None):
+    if batteries is None:
+        batteries = detect_batteries()
+    laptop, _why = laptop_decision(screens, batteries)
+    return laptop
 
 
 def desktop_search_dirs():
@@ -562,8 +713,27 @@ def _panel(role, screen, location, height, length_mode, alignment, floating, flo
     }
 
 
-def build_plan(screens, sensors, plasmoids, wallpaper, exists):
-    laptop = is_laptop(screens)
+def describe_screens(plan):
+    screens = plan.get("screens") or []
+    source = plan.get("screenSource") or "provided"
+    if not screens:
+        return f"Screens ({source}): none"
+    bits = []
+    for screen in screens:
+        orient = "landscape" if screen.get("landscape", screen["width"] >= screen["height"]) else "portrait"
+        role = "primary" if screen.get("primary") else "secondary"
+        edp = " eDP" if screen.get("edp") else ""
+        bits.append(f"{screen['name']} {screen['width']}x{screen['height']} {orient} {role}{edp}")
+    text = f"Screens ({source}): " + ", ".join(bits)
+    if source == "fallback":
+        text += " — kscreen-doctor returned nothing usable, so this is one assumed 1920x1080 display"
+    return text
+
+
+def build_plan(screens, sensors, plasmoids, wallpaper, exists, batteries=None):
+    if batteries is None:
+        batteries = detect_batteries()
+    laptop, laptop_reason = laptop_decision(screens, batteries)
     primary_launchers = filter_launchers(PRIMARY_LAUNCHERS, exists)
     secondary_launchers = filter_launchers(SECONDARY_LAUNCHERS, exists)
     primary = next(screen for screen in screens if screen["primary"])
@@ -584,6 +754,9 @@ def build_plan(screens, sensors, plasmoids, wallpaper, exists):
         "wallpaper": wallpaper,
         "fillMode": 2,
         "laptop": laptop,
+        "laptopReason": laptop_reason,
+        "batteries": list(batteries),
+        "screenSource": (screens[0].get("source") if screens else None) or "provided",
         "launchers": primary_launchers,
         "secondaryLaunchers": secondary_launchers,
         "sensors": sorted(sensors),
@@ -597,6 +770,7 @@ def build_plan(screens, sensors, plasmoids, wallpaper, exists):
                 "height": screen["height"],
                 "primary": screen["primary"],
                 "landscape": screen["landscape"],
+                "edp": bool(screen.get("edp")),
             }
             for screen in screens
         ],
@@ -881,9 +1055,17 @@ def cmd_apply(args):
         print(f"Backed up the existing panel config to {backup_dir(args.data_home)}")
     else:
         print(f"Kept the existing panel backup at {backup_dir(args.data_home)}")
+    print(describe_screens(plan))
+    if plan.get("screenSource") == "fallback":
+        print(
+            "warning: screen detection used the fallback display. "
+            "Check that kscreen-doctor -j (or -o) works in this session.",
+            file=sys.stderr,
+        )
+    battery = "yes" if plan["laptop"] else "no"
     print(
         f"GenoTheme panels: {len(plan['panels'])} "
-        f"(laptop battery: {'yes' if plan['laptop'] else 'no'}, "
+        f"(laptop battery: {battery} — {plan.get('laptopReason', '')}, "
         f"dock launchers: {len(plan['launchers'])})"
     )
     return 0
