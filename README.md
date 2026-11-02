@@ -53,7 +53,10 @@ git clone https://github.com/MathisP75/daemon-kde-mk2.git /tmp/daemon   # built 
 python3 tools/recolor.py /tmp/daemon themes
 ```
 
-`tools/recolor.py` holds the full Daemon → GenoCorp colour map. It needs only the Python standard library.
+`tools/recolor.py` holds the full Daemon → GenoCorp colour map. `tools/custom-icons/` holds the extra
+Daemon-style icons made for this machine's apps (Grok, Grok Bot, Affinity, DaVinci Resolve, Glide, Stacher7,
+YouTube Music, Insync/Steam/Beacn/Glide tray icons) and the Daemon "D" logo; the script recolours them into
+GenoTheme-Icons (the logo becomes `genotheme-logo`, used as the app-launcher button icon). It needs only the Python standard library.
 
 ## Wallpaper
 
