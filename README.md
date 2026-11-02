@@ -24,8 +24,11 @@ for warnings and active accents — matching the GenoCorp site and the *Manifest
 | Icons | `themes/icons/GenoTheme-Icons` | Icons → GenoTheme-Icons |
 | Konsole colour scheme + profile | `themes/konsole/` | Konsole profile "GenoTheme" |
 | GTK theme (Breeze-Dark based, CSS recoloured) | `themes/gtk/GenoTheme-GTK` | Application Style → GNOME/GTK |
-| Global theme (ties it together, no panel layout) | `themes/look-and-feel/com.genocorp.genotheme` | Global Theme → GenoTheme |
+| Global theme (includes the Balthasar desktop layout) | `themes/look-and-feel/com.genocorp.genotheme` | Global Theme → GenoTheme |
 | Wallpaper package | `wallpaper-package/GenoTheme` | Wallpaper → GenoTheme Manifesto |
+| Panel plasmoids | `plasmoids/` | installed for the user, not picked by hand |
+| Fonts (Rajdhani, Orbitron, Hack) | `fonts/` | applied by `--apply` |
+| Firefox chrome theme | `themes/firefox/GenoThemeFox` | GenoThemeFox (userChrome, not an add-on) |
 
 Palette (from the GenoCorp site CSS):
 
@@ -40,12 +43,37 @@ Palette (from the GenoCorp site CSS):
 ## Install
 
 ```bash
-./install.sh            # copy everything into ~/.local/share and ~/.config (no sudo)
-./install.sh --apply    # ...and switch colours, Plasma style, Kvantum, icons, window decoration, Konsole default profile
+./install.sh                   # copy files only (no sudo). Does not change panels, Firefox, or the running theme.
+./install.sh --apply           # ...and apply the Balthasar look (see below)
+./install.sh --layout          # panels and desktop wallpaper only
+./install.sh --restore-panels  # put back the panel config from before the first --apply/--layout
 ```
 
-`--apply` deliberately does **not** apply the global theme, so your panel layout is never touched.
-Restart already-open Qt apps (Dolphin, Konsole, …) to pick up the new Kvantum style.
+Nothing here needs root. The first `--apply` or `--layout` copies the current
+`plasma-org.kde.plasma.desktop-appletsrc`, `plasmashellrc` and `kscreenlockerrc`
+to `~/.local/share/genotheme/panel-backup/` and will not overwrite that backup
+on later runs. `--restore-panels` copies it back and restarts Plasma if it was
+running. Colours, fonts, KWin and Firefox are not reverted by the restore.
+
+### What `./install.sh --apply` does
+
+- Copies the theme, the six vendored plasmoids, the wallpaper package and the fonts.
+- Sets the colour scheme, Plasma style, icon theme (`GenoTheme-Icons`), Konsole profile and Aurorae decoration.
+- Writes `kdeglobals` `[KDE] widgetStyle=kvantum` (Kvantum Manager never did this) and selects the GenoTheme Kvantum theme. If the `kvantum` package is missing it warns and still writes the key; Fedora package: `sudo dnf install kvantum`.
+- Installs Rajdhani, Orbitron and Hack under `~/.local/share/fonts/genotheme/` and sets Rajdhani Medium 10 (UI, menus, toolbar), Orbitron 8 (window titles) and Hack 10 (monospace).
+- KWin: no borders, blur strength 7 / noise 3, built-in effects (contrast, translucency, magic lamp, scale, slide, fading popups; wobbly windows and squash off), flip alt-tab, animation factor 0.7.
+- Wallpaper: GenoTheme Manifesto, crop/fill (`FillMode=2`) on every desktop and on the lock screen.
+- Panels, on the primary screen: a 34px bottom status bar (tray, ISO clock with the date beside the time, lock/logout, CPU/RAM/GPU pie+text in `77,107,255`, netspeed, temperatures, media controls, show desktop, overview) and a 46px left dock (GenoTheme launcher icon, task icons, dot pager). Other landscape screens get a 46px floating bottom mini panel. Portrait screens get nothing. The primary screen is always given the full pair, even if it is portrait.
+- The dock only pins launchers whose `.desktop` file exists on this machine (`preferred://filemanager` and `preferred://browser` always stay). Glide stays if it is installed; GenoCommand is added beside it when its desktop file exists. CPU, memory, GPU and temperature widgets are omitted when that sensor is not present. A laptop with a single `eDP` screen gets `org.kde.plasma.battery` in the tray.
+- Refreshes the icon cache and restarts `plasmashell` when it was already running, so icons and panels show up without logging out. After the restart it asks the running shell to rebuild the panels, matching each panel to a screen by its geometry. The on-disk fallback (used when Plasma is not running) numbers screens in `kscreen-doctor` priority order, with priority 1 as screen 0.
+- Firefox: writes GenoThemeFox into the default profile (see below). If Firefox is open, it tells you to quit it completely and start it again.
+
+The same panel script is stamped into the installed look-and-feel package
+(`contents/layouts/org.kde.plasma.desktop-layout.js`), so System Settings →
+Global Theme → GenoTheme can apply the desktop layout too. Just copying the
+files, or switching colours, does not touch the panels.
+
+Restart already-open Qt apps (Dolphin, Konsole, …) to pick up Kvantum.
 
 System Monitor widgets store their own sensor colours. GenoTheme uses `77,107,255` (blue) for the
 primary sensor, `255,0,0` (red) for secondary series and `106,112,149` (muted) for background series.
@@ -60,9 +88,11 @@ python3 tools/recolor.py /tmp/daemon themes
 ```
 
 `tools/recolor.py` holds the full Daemon → GenoCorp colour map. `tools/custom-icons/` holds the extra
-Daemon-style icons made for this machine's apps (Grok, Grok Bot, Affinity, DaVinci Resolve, Glide, Stacher7,
-YouTube Music, Insync/Steam/Beacn/Glide tray icons) and the Daemon "D" logo; the script recolours them into
-GenoTheme-Icons (the logo becomes `genotheme-logo`, used as the app-launcher button icon). It needs only the Python standard library.
+Daemon-style icons made for this machine's apps (Grok, Grok Bot, Affinity, DaVinci Resolve, Glide,
+GenoCommand, Stacher7, YouTube Music, Shutter Encoder, Pipeweaver, TuxBox, GenoBeacon, Beacn, Gridcraft,
+Vectorcraft, plus the Insync/Steam/Beacn/Glide/GenoCommand tray icons) and the Daemon "D" logo; the script
+recolours them into GenoTheme-Icons (the logo becomes `genotheme-logo`, used as the app-launcher button
+icon). It needs only the Python standard library.
 
 ## Wallpaper
 
@@ -70,6 +100,35 @@ GenoTheme-Icons (the logo becomes `genotheme-logo`, used as the app-launcher but
 `genotheme-manifesto-3840x2160.png`). It's generated by `wallpaper/manifesto2.py`, which builds on
 `text.py`, `more.py` and `make2.py` (run from inside `wallpaper/`). The other `genotheme-*` SVGs are
 alternate designs.
+
+## Not shipped (on purpose)
+
+Balthasar also had a few pieces that are not part of this repo:
+
+- **KWin ShapeCorners** (`kwin4_effect_shapecorners`, corner size 10) and **tv glitch** (`kwin6_effect_tv_glitch`). Both are third-party effects and were not in the reference archive, so `--apply` does not enable them.
+- The **Bibata Original Classic** cursor (24px). It is not bundled.
+- The **Klassy** window decoration recorded under `kdecoration3` on Balthasar. GenoTheme keeps Aurorae and only forces `BorderSize=None` on that group.
+- Desktop widgets (the floating memory/network/CPU plasmoids), virtual-desktop names, per-machine `.desktop` overrides, hot corners, HDR and tiling. Those are that PC's, not the theme.
+
+## Firefox (GenoThemeFox)
+
+`themes/firefox/GenoThemeFox` is the Daemon 2.0 Firefox theme (`Daemon2.0`, add-on
+`{28127a6f-9a96-4256-b4d9-87b54b7ffc1c}`) recoloured with the same map as
+`tools/recolor.py`. Stock Fedora Firefox is a release build: it refuses unsigned
+add-ons, and it ignores `xpinstall.signatures.required`, so the theme is **not**
+installed as an extension.
+
+`--apply` writes `chrome/userChrome.css`, `chrome/userContent.css` and a marked
+block in `user.js` (which sets `toolkit.legacyUserProfileCustomizations.stylesheets`
+so Firefox actually loads those files) into the default profile from:
+
+- `~/.mozilla/firefox/profiles.ini`
+- `~/.config/mozilla/firefox/profiles.ini`
+- the `org.mozilla.firefox` Flatpak (`~/.var/app/org.mozilla.firefox/…`), when that profiles.ini exists
+
+An existing `user.js` or `userChrome.css` is left in place; only the
+`GenoThemeFox` block is replaced, so running `--apply` again is safe. Quit
+Firefox completely and start it again or the chrome will not reload.
 
 ## Credits & licence
 
@@ -81,3 +140,13 @@ GenoTheme is distributed under the same **GNU General Public License v3** (see `
 modifying and redistributing the work as long as the modified version stays under the GPL, keeps these
 credits and the licence text, and ships its source (the SVG and config files in this repo are the source).
 The GenoCorp wallpaper art and generator scripts are original works by GenoCorp and are included under the same licence.
+
+The panel layout uses six third-party plasmoids, vendored under `plasmoids/` with their own licences
+(GPL-2.0-or-later, GPL-3.0-or-later, MIT). See `plasmoids/README.md`.
+
+Rajdhani (Indian Type Foundry) and Orbitron (The Orbitron Project Authors) are under the SIL Open Font
+License 1.1. Hack (Source Foundry) is MIT, with the Bitstream Vera licence for the upstream glyphs; it is
+not OFL, and it is included because that licence allows bundling it. See `fonts/README.md`.
+
+GenoThemeFox is a recolour of the Daemon 2.0 Firefox theme by Mathis Paquet. See
+`themes/firefox/GenoThemeFox/CREDITS.md`.

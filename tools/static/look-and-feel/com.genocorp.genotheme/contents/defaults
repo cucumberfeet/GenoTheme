@@ -1,15 +1,33 @@
 [kdeglobals][General]
 ColorScheme=GenoTheme
+font=Rajdhani,10,-1,5,500,0,0,0,0,0,0,0,0,0,0,1,Medium
+menuFont=Rajdhani,10,-1,5,500,0,0,0,0,0,0,0,0,0,0,1,Medium
+smallestReadableFont=Rajdhani,8,-1,5,500,0,0,0,0,0,0,0,0,0,0,1,Medium
+toolBarFont=Rajdhani,10,-1,5,500,0,0,0,0,0,0,0,0,0,0,1,Medium
+fixed=Hack,10,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
 
 [kdeglobals][Icons]
 Theme=GenoTheme-Icons
 
 [kdeglobals][KDE]
 widgetStyle=kvantum
+AnimationDurationFactor=0.7
+
+[kdeglobals][WM]
+activeFont=Orbitron,8,-1,5,400,0,0,0,0,0,0,0,0,0,0,1
 
 [kwinrc][org.kde.kdecoration2]
 library=org.kde.kwin.aurorae
 theme=__aurorae__svg__GenoTheme
+BorderSize=None
+BorderSizeAuto=false
 
 [plasmarc][Theme]
 name=GenoTheme
+
+[kscreenlockerrc][Greeter]
+WallpaperPlugin=org.kde.image
+
+[kscreenlockerrc][Greeter][Wallpaper][org.kde.image][General]
+Image=GenoTheme
+FillMode=2

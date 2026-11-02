@@ -156,8 +156,10 @@ def main(up, out):
     it = re.sub(r"(?m)^Comment=.*$", "Comment=GenoCorp recolour of Daemon-Icons (Simply Circles)", it, count=1)
     (d / "index.theme").write_text(it)
     # Custom Daemon-style icons made for this machine's apps (not in upstream Daemon-Icons):
-    # app launchers (Grok, Grok Bot, Affinity, Resolve, Glide, Stacher7, YT Music) + tray icons,
-    # and the Daemon "D" logo used as the app-launcher button (installed as genotheme-logo).
+    # app launchers (Grok, Grok Bot, Affinity, Resolve, Glide, GenoCommand, Stacher7,
+    # YT Music, Shutter Encoder, Pipeweaver, TuxBox, GenoBeacon, Beacn, Gridcraft,
+    # Vectorcraft) + tray icons, and the Daemon "D" logo used as the app-launcher
+    # button (installed as genotheme-logo).
     custom = Path(__file__).resolve().parent / "custom-icons"
     if custom.exists():
         for p in sorted((custom / "scalable").rglob("*.svg")):

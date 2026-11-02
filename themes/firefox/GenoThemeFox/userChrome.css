@@ -1,0 +1,48 @@
+/* GenoThemeFox — Daemon 2.0 Firefox colours mapped onto the GenoTheme palette.
+   Variable names follow Firefox LightweightThemeConsumer.sys.mjs and
+   browser/themes/ThemeVariableMap.sys.mjs. !important beats a signed lightweight
+   theme's inline colours, so an installed Daemon2.0 add-on cannot paint over this.
+   Field borders, icon fill and popup borders reuse the mapped blue and red so the
+   chrome stays visible; the original theme left those keys unset. */
+:root {
+  color-scheme: dark !important;
+
+  --lwt-accent-color: #080a24 !important;
+  --lwt-text-color: #4d6bff !important;
+
+  --toolbar-background-color: #080a24 !important;
+  --toolbar-bgcolor: #080a24 !important;
+  --toolbar-text-color: #4d6bff !important;
+  --toolbar-color: #4d6bff !important;
+
+  --toolbar-field-background-color: #020205 !important;
+  --toolbar-field-text-color: #4d6bff !important;
+  --toolbar-field-color: #4d6bff !important;
+  --toolbar-field-border-color: #4d6bff !important;
+  --toolbar-field-background-color-focus: #020205 !important;
+  --toolbar-field-focus-background-color: #020205 !important;
+  --toolbar-field-text-color-focus: #4d6bff !important;
+  --toolbar-field-focus-color: #4d6bff !important;
+  --toolbar-field-border-color-focus: #ff0000 !important;
+  --toolbar-field-focus-border-color: #ff0000 !important;
+  --lwt-toolbar-field-highlight: #4d6bff !important;
+  --lwt-toolbar-field-highlight-text: #020205 !important;
+
+  --lwt-tab-line-color: #ff0000 !important;
+  --tab-line-color: #ff0000 !important;
+  --tab-loading-fill: #ff0000 !important;
+
+  --toolbarbutton-icon-fill: #4d6bff !important;
+
+  --panel-background-color: #080a24 !important;
+  --arrowpanel-background: #080a24 !important;
+  --panel-text-color: #4d6bff !important;
+  --arrowpanel-color: #4d6bff !important;
+  --panel-border-color: #4d6bff !important;
+  --arrowpanel-border-color: #4d6bff !important;
+
+  --autocomplete-popup-background: #080a24 !important;
+  --autocomplete-popup-color: #4d6bff !important;
+  --autocomplete-popup-highlight-background: #4d6bff !important;
+  --autocomplete-popup-highlight-color: #020205 !important;
+}

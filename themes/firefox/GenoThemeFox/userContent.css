@@ -1,0 +1,19 @@
+/* In-content pages the Daemon theme did not colour. Uses the GenoTheme UI palette
+   (background #020205, panel #080a24, text #d9def5, accent #4d6bff) so about:home
+   is not a light page beside the navy chrome. */
+@-moz-document url-prefix("about:home"), url-prefix("about:newtab"), url-prefix("about:privatebrowsing"), url-prefix("about:firefoxview") {
+  :root {
+    color-scheme: dark !important;
+    --newtab-background-color: #020205 !important;
+    --newtab-background-color-secondary: #080a24 !important;
+    --newtab-text-primary-color: #d9def5 !important;
+    --newtab-primary-action-background: #4d6bff !important;
+    background-color: #020205 !important;
+    color: #d9def5 !important;
+  }
+
+  body {
+    background-color: #020205 !important;
+    color: #d9def5 !important;
+  }
+}
