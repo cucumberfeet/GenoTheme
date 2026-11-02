@@ -375,7 +375,10 @@ def test_firefox_profiles_are_idempotent():
     manifest = json.loads((theme / "manifest.json").read_text(encoding="utf-8"))
     colors = manifest["theme"]["colors"]
     assert colors["toolbar"] == "#080a24"
-    assert colors["toolbar_text"] == "#4d6bff"
+    assert colors["toolbar_text"] == "#d9def5"
+    assert colors["icons"] == "#d9def5"
+    assert colors["toolbar_field_border"] == "#4d6bff"
+    assert colors["tab_line"] == "#ff0000"
     assert colors["toolbar_field"] == "#020205"
     assert colors["tab_line"] == "#ff0000"
     assert colors["frame"] == colors["popup"] == "#080a24"
@@ -392,6 +395,15 @@ def test_firefox_profiles_are_idempotent():
         (profile / "user.js").write_text('user_pref("browser.startup.homepage", "about:blank");\n', encoding="utf-8")
         (profile / "chrome").mkdir()
         (profile / "chrome/userChrome.css").write_text("/* user rule */\n#urlbar { opacity: 0.9; }\n", encoding="utf-8")
+        (profile / "extensions.json").write_text(json.dumps({
+            "schemaVersion": 36,
+            "addons": [
+                {"id": "default-theme@mozilla.org", "type": "theme", "active": False, "userDisabled": True},
+                {"id": "{28127a6f-9a96-4256-b4d9-87b54b7ffc1c}", "type": "theme", "active": True, "userDisabled": False, "softDisabled": False},
+                {"id": "firefox-compact-dark@mozilla.org", "type": "theme", "active": False, "userDisabled": True},
+                {"id": "uBlock0@raymondhill.net", "type": "extension", "active": True, "userDisabled": False},
+            ],
+        }), encoding="utf-8")
         (ini_dir / "profiles.ini").write_text(
             "[InstallABC]\nDefault=abcd.default-release\nLocked=1\n\n"
             "[Profile0]\nName=default-release\nIsRelative=1\nPath=abcd.default-release\nDefault=1\n",
@@ -413,12 +425,25 @@ def test_firefox_profiles_are_idempotent():
         chrome = (profile / "chrome/userChrome.css").read_text(encoding="utf-8")
         assert "#urlbar { opacity: 0.9; }" in chrome
         assert chrome.count("BEGIN GenoThemeFox") == 1
+        assert "#d9def5" in chrome
         assert "#4d6bff" in chrome
+        assert "#navigator-toolbox" in chrome
+        assert ".urlbar-background" in chrome
+        assert 'extensions.activeThemeID", "firefox-compact-dark@mozilla.org"' in text
+        db = json.loads((profile / "extensions.json").read_text(encoding="utf-8"))
+        by_id = {a["id"]: a for a in db["addons"]}
+        assert by_id["firefox-compact-dark@mozilla.org"]["active"] is True
+        assert by_id["firefox-compact-dark@mozilla.org"]["userDisabled"] is False
+        assert by_id["{28127a6f-9a96-4256-b4d9-87b54b7ffc1c}"]["active"] is False
+        assert by_id["{28127a6f-9a96-4256-b4d9-87b54b7ffc1c}"]["userDisabled"] is True
+        assert by_id["default-theme@mozilla.org"]["active"] is False
+        assert by_id["uBlock0@raymondhill.net"]["active"] is True
+        assert (profile / "extensions.json.bak-genotheme").is_file()
         assert (flat / "flat.default/chrome/userContent.css").is_file()
         firefox_theme.apply_home(home, theme, running=False)
         assert (profile / "user.js").read_text(encoding="utf-8").count("BEGIN GenoThemeFox") == 1
         assert (profile / "chrome/userChrome.css").read_text(encoding="utf-8").count("BEGIN GenoThemeFox") == 1
-        assert any("quit Firefox completely" in line for line in messages)
+        assert any("Quit it completely" in line for line in messages)
 
 
 def test_install_script_does_not_touch_panels_until_apply():

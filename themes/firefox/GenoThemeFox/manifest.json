@@ -9,14 +9,19 @@
     "properties": {},
     "colors": {
       "toolbar": "#080a24",
-      "toolbar_text": "#4d6bff",
+      "toolbar_text": "#d9def5",
       "frame": "#080a24",
-      "tab_background_text": "#4d6bff",
+      "tab_background_text": "#d9def5",
       "toolbar_field": "#020205",
-      "toolbar_field_text": "#4d6bff",
+      "toolbar_field_text": "#d9def5",
+      "toolbar_field_border": "#4d6bff",
+      "toolbar_field_border_focus": "#ff0000",
       "tab_line": "#ff0000",
       "popup": "#080a24",
-      "popup_text": "#4d6bff",
+      "popup_text": "#d9def5",
+      "popup_highlight": "#4d6bff",
+      "popup_highlight_text": "#ffffff",
+      "icons": "#d9def5",
       "tab_loading": "#ff0000"
     }
   },

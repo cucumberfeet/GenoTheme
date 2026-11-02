@@ -6,6 +6,7 @@ userContent.css and a marked block in user.js instead of an .xpi.
 """
 import argparse
 import configparser
+import json
 import os
 import subprocess
 import sys
@@ -15,6 +16,8 @@ BEGIN_CSS = "/* BEGIN GenoThemeFox */"
 END_CSS = "/* END GenoThemeFox */"
 BEGIN_JS = "// BEGIN GenoThemeFox"
 END_JS = "// END GenoThemeFox"
+DAEMON_THEME_ID = "{28127a6f-9a96-4256-b4d9-87b54b7ffc1c}"
+DARK_THEME_ID = "firefox-compact-dark@mozilla.org"
 
 ROOTS = (
     Path(".mozilla/firefox/profiles.ini"),
@@ -104,6 +107,50 @@ def firefox_is_running():
     return False
 
 
+def select_dark_theme(profile):
+    """Disable the Daemon2.0 theme and enable the built-in Dark theme.
+
+    extensions.activeThemeID in user.js is not enough: Firefox stores the
+    enabled theme in extensions.json and rewrites that file when it quits.
+    Compact Dark is an in-app theme, not a lightweight theme, so the chrome
+    colours still come from userChrome.css. Returns a short status string.
+    """
+    path = Path(profile) / "extensions.json"
+    if not path.is_file():
+        return "no extensions.json yet; userChrome.css still paints the window"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "extensions.json is not valid JSON; left it unchanged"
+    addons = data.get("addons")
+    if not isinstance(addons, list):
+        return "extensions.json has no add-on list; left it unchanged"
+    themes = [a for a in addons if isinstance(a, dict) and a.get("type") == "theme"]
+    dark = next((a for a in themes if a.get("id") == DARK_THEME_ID), None)
+    daemon = next((a for a in themes if a.get("id") == DAEMON_THEME_ID), None)
+    if dark is None and daemon is None:
+        return "no Dark or Daemon theme entry in extensions.json"
+    backup = path.with_name("extensions.json.bak-genotheme")
+    if not backup.exists():
+        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    if dark is None:
+        daemon["userDisabled"] = True
+        daemon["active"] = False
+    else:
+        for theme in themes:
+            enable = theme.get("id") == DARK_THEME_ID
+            theme["userDisabled"] = not enable
+            theme["active"] = enable
+            if "softDisabled" in theme:
+                theme["softDisabled"] = False
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    if dark is None:
+        return "Daemon2.0 theme disabled; built-in Dark theme is not in this profile"
+    if daemon is None:
+        return f"active theme set to {DARK_THEME_ID}"
+    return f"active theme set to {DARK_THEME_ID}; Daemon2.0 disabled"
+
+
 def apply_profile(profile, theme_dir):
     profile = Path(profile)
     profile.mkdir(parents=True, exist_ok=True)
@@ -121,6 +168,7 @@ def apply_profile(profile, theme_dir):
     dest = profile / "user.js"
     current = dest.read_text(encoding="utf-8") if dest.exists() else ""
     dest.write_text(upsert_block(current, BEGIN_JS, END_JS, body), encoding="utf-8")
+    return select_dark_theme(profile)
 
 
 def apply_home(home, theme_dir, running=None):
@@ -136,9 +184,9 @@ def apply_home(home, theme_dir, running=None):
             if not profile.is_dir():
                 messages.append(f"GenoThemeFox: default profile path does not exist yet: {profile}")
                 continue
-            apply_profile(profile, theme_dir)
+            theme_status = apply_profile(profile, theme_dir)
             written.append(profile)
-            messages.append(f"GenoThemeFox installed in {profile}")
+            messages.append(f"GenoThemeFox installed in {profile} ({theme_status})")
     if not written and not any("no default profile" in m or "does not exist" in m for m in messages):
         messages.append(
             "GenoThemeFox: no Firefox profiles.ini under ~/.mozilla/firefox, "
@@ -148,8 +196,10 @@ def apply_home(home, theme_dir, running=None):
     is_running = firefox_is_running() if running is None else running
     if written and is_running:
         messages.append(
-            "Firefox is running. GenoThemeFox is on disk but will not show until you "
-            "quit Firefox completely (including the tray) and start it again."
+            "Firefox is running. Quit it completely (including the tray) and start it "
+            "again so userChrome.css loads. If it is still open it will save the old "
+            "theme choice over extensions.json when it quits; run ./install.sh --apply "
+            "once more after it has quit so Daemon2.0 stays disabled."
         )
     elif written:
         messages.append("Restart Firefox if it is open so GenoThemeFox loads.")
