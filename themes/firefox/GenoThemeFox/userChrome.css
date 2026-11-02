@@ -1,48 +1,134 @@
-/* GenoThemeFox — Daemon 2.0 Firefox colours mapped onto the GenoTheme palette.
-   Variable names follow Firefox LightweightThemeConsumer.sys.mjs and
-   browser/themes/ThemeVariableMap.sys.mjs. !important beats a signed lightweight
-   theme's inline colours, so an installed Daemon2.0 add-on cannot paint over this.
-   Field borders, icon fill and popup borders reuse the mapped blue and red so the
-   chrome stays visible; the original theme left those keys unset. */
+/* GenoThemeFox
+   Backgrounds stay the mapped navy (#080a24 / #020205). Text and icons are
+   #d9def5 so they stay readable; #4d6bff is only for borders, focus and
+   selection, and #ff0000 is the selected-tab line.
+
+   Firefox only writes --lwt-* / toolbar variables as inline styles when a
+   lightweight theme is active (LightweightThemeConsumer hasTheme). The System
+   theme and firefox-compact-dark are not lightweight themes, so those
+   variables never reach the widgets. The rules below set the same variables
+   (they win over the Daemon2.0 add-on when it is active) and also paint the
+   toolbox, tabs, URL bar, icons and menus directly. */
 :root {
   color-scheme: dark !important;
 
   --lwt-accent-color: #080a24 !important;
-  --lwt-text-color: #4d6bff !important;
-
+  --lwt-text-color: #d9def5 !important;
   --toolbar-background-color: #080a24 !important;
   --toolbar-bgcolor: #080a24 !important;
-  --toolbar-text-color: #4d6bff !important;
-  --toolbar-color: #4d6bff !important;
+  --toolbar-text-color: #d9def5 !important;
+  --toolbar-color: #d9def5 !important;
+  --toolbarbutton-icon-fill: #d9def5 !important;
+
+  --toolbox-non-lwt-bgcolor: #080a24 !important;
+  --toolbox-non-lwt-textcolor: #d9def5 !important;
+  --toolbox-non-lwt-bgcolor-inactive: #05061a !important;
+  --toolbox-non-lwt-textcolor-inactive: #d9def5 !important;
 
   --toolbar-field-background-color: #020205 !important;
-  --toolbar-field-text-color: #4d6bff !important;
-  --toolbar-field-color: #4d6bff !important;
-  --toolbar-field-border-color: #4d6bff !important;
-  --toolbar-field-background-color-focus: #020205 !important;
   --toolbar-field-focus-background-color: #020205 !important;
-  --toolbar-field-text-color-focus: #4d6bff !important;
-  --toolbar-field-focus-color: #4d6bff !important;
+  --toolbar-field-text-color: #d9def5 !important;
+  --toolbar-field-color: #d9def5 !important;
+  --toolbar-field-focus-color: #d9def5 !important;
+  --toolbar-field-text-color-focus: #d9def5 !important;
+  --toolbar-field-border-color: #4d6bff !important;
   --toolbar-field-border-color-focus: #ff0000 !important;
   --toolbar-field-focus-border-color: #ff0000 !important;
   --lwt-toolbar-field-highlight: #4d6bff !important;
-  --lwt-toolbar-field-highlight-text: #020205 !important;
+  --lwt-toolbar-field-highlight-text: #ffffff !important;
 
   --lwt-tab-line-color: #ff0000 !important;
   --tab-line-color: #ff0000 !important;
   --tab-loading-fill: #ff0000 !important;
 
-  --toolbarbutton-icon-fill: #4d6bff !important;
-
   --panel-background-color: #080a24 !important;
   --arrowpanel-background: #080a24 !important;
-  --panel-text-color: #4d6bff !important;
-  --arrowpanel-color: #4d6bff !important;
+  --panel-text-color: #d9def5 !important;
+  --arrowpanel-color: #d9def5 !important;
   --panel-border-color: #4d6bff !important;
   --arrowpanel-border-color: #4d6bff !important;
-
   --autocomplete-popup-background: #080a24 !important;
-  --autocomplete-popup-color: #4d6bff !important;
+  --autocomplete-popup-color: #d9def5 !important;
   --autocomplete-popup-highlight-background: #4d6bff !important;
-  --autocomplete-popup-highlight-color: #020205 !important;
+  --autocomplete-popup-highlight-color: #ffffff !important;
+}
+
+#navigator-toolbox,
+#titlebar,
+#TabsToolbar,
+#nav-bar,
+#PersonalToolbar,
+#toolbar-menubar,
+#bookmarks-toolbar,
+toolbar {
+  background-color: #080a24 !important;
+  color: #d9def5 !important;
+}
+
+.tabbrowser-tab,
+.tab-label,
+.tab-text,
+.tabbrowser-tab .tab-icon-image {
+  color: #d9def5 !important;
+  fill: #d9def5 !important;
+}
+
+.tabbrowser-tab[selected="true"] .tab-background,
+.tabbrowser-tab[selected] .tab-background {
+  background-color: #05061a !important;
+  background-image: none !important;
+  box-shadow: inset 0 -2px 0 #ff0000 !important;
+}
+
+#urlbar,
+#searchbar,
+#urlbar-background,
+.urlbar-background,
+#urlbar-input,
+.urlbar-input,
+.searchbar-textbox {
+  background-color: #020205 !important;
+  color: #d9def5 !important;
+  caret-color: #d9def5 !important;
+}
+
+#urlbar,
+#searchbar,
+#urlbar-background,
+.urlbar-background {
+  border-color: #4d6bff !important;
+}
+
+#urlbar:is([focused="true"], [open]),
+#urlbar:is([focused="true"], [open]) .urlbar-background,
+#searchbar:focus-within {
+  border-color: #ff0000 !important;
+}
+
+.toolbarbutton-1,
+.toolbarbutton-1 > .toolbarbutton-icon,
+.toolbarbutton-1 > .toolbarbutton-text,
+.toolbarbutton-icon,
+#PanelUI-menu-button {
+  color: #d9def5 !important;
+  fill: #d9def5 !important;
+}
+
+.urlbarView-row[selected],
+.urlbarView-row[selected] .urlbarView-title,
+.urlbarView-row[selected] .urlbarView-url,
+menuitem[_moz-menuactive="true"],
+menuitem[active="true"] {
+  background-color: #4d6bff !important;
+  color: #ffffff !important;
+}
+
+panel,
+menupopup,
+panelview,
+.panel-subview-body,
+.panel-arrowcontent {
+  background-color: #080a24 !important;
+  color: #d9def5 !important;
+  border-color: #4d6bff !important;
 }

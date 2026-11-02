@@ -118,6 +118,10 @@ Balthasar also had a few pieces that are not part of this repo:
 add-ons, and it ignores `xpinstall.signatures.required`, so the theme is **not**
 installed as an extension.
 
+Toolbar text and icons are `#d9def5` (near-white). `#4d6bff` is used for borders
+and selection, and the selected tab keeps the red line. Blue text on `#080a24`
+was too dim to read.
+
 `--apply` writes `chrome/userChrome.css`, `chrome/userContent.css` and a marked
 block in `user.js` (which sets `toolkit.legacyUserProfileCustomizations.stylesheets`
 so Firefox actually loads those files) into the default profile from:
@@ -126,9 +130,18 @@ so Firefox actually loads those files) into the default profile from:
 - `~/.config/mozilla/firefox/profiles.ini`
 - the `org.mozilla.firefox` Flatpak (`~/.var/app/org.mozilla.firefox/…`), when that profiles.ini exists
 
-An existing `user.js` or `userChrome.css` is left in place; only the
-`GenoThemeFox` block is replaced, so running `--apply` again is safe. Quit
-Firefox completely and start it again or the chrome will not reload.
+The sheet paints the toolbox, tabs, URL bar and icons directly. Firefox only
+applies `--lwt-*` variables when a lightweight theme is active, so the System
+theme on Melchior (`default-theme@mozilla.org`) ignored a variable-only sheet.
+The built-in Dark theme (`firefox-compact-dark@mozilla.org`) is the same kind
+of theme: it only forces a dark colour scheme. Direct rules cover both, and
+they also override the Daemon 2.0 add-on if it is still selected.
+
+When `extensions.json` lists that Dark theme, `--apply` enables it and marks
+the Daemon 2.0 add-on disabled. Quit Firefox completely first: if it is still
+open it writes the old theme choice back when it quits, and `--apply` has to
+be run again. An existing `user.js` or `userChrome.css` is left in place; only
+the `GenoThemeFox` block is replaced.
 
 ## Credits & licence
 
