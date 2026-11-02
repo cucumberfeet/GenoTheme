@@ -1,0 +1,14 @@
+{
+    "KPlugin": {
+        "Authors": [{"Name": "Mathis Paquet (Daemon 2.0)"}, {"Name": "GenoCorp (GenoTheme recolour)"}],
+        "Category": "",
+        "Description": "GenoCorp recolour of Daemon 2.0",
+        "EnabledByDefault": true,
+        "Id": "GenoTheme",
+        "License": "GPL-3.0-or-later",
+        "Name": "GenoTheme",
+        "Version": "1.0",
+        "Website": "https://github.com/MathisP75/daemon-kde-mk2"
+    },
+    "X-Plasma-API": "5.0"
+}

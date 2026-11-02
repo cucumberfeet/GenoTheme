@@ -1,0 +1,8 @@
+{
+    "KPlugin": {
+        "Authors": [{"Name": "GenoCorp"}],
+        "Id": "GenoTheme",
+        "License": "GPL-3.0-or-later",
+        "Name": "GenoTheme Manifesto"
+    }
+}

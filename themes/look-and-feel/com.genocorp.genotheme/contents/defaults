@@ -1,0 +1,15 @@
+[kdeglobals][General]
+ColorScheme=GenoTheme
+
+[kdeglobals][Icons]
+Theme=GenoTheme-Icons
+
+[kdeglobals][KDE]
+widgetStyle=kvantum
+
+[kwinrc][org.kde.kdecoration2]
+library=org.kde.kwin.aurorae
+theme=__aurorae__svg__GenoTheme
+
+[plasmarc][Theme]
+name=GenoTheme

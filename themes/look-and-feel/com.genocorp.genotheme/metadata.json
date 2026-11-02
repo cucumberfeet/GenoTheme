@@ -1,0 +1,15 @@
+{
+    "KPackageStructure": "Plasma/LookAndFeel",
+    "KPlugin": {
+        "Authors": [{"Name": "GenoCorp"}, {"Name": "Mathis Paquet (Daemon 2.0 base)"}],
+        "Category": "Global Themes (Plasma 6)",
+        "Description": "GenoCorp corporate-dystopia theme, recoloured from Daemon 2.0",
+        "EnabledByDefault": true,
+        "Id": "com.genocorp.genotheme",
+        "License": "GPL-3.0-or-later",
+        "Name": "GenoTheme",
+        "Version": "1.0",
+        "Website": "https://github.com/MathisP75/daemon-kde-mk2"
+    },
+    "X-Plasma-APIVersion": "2"
+}
