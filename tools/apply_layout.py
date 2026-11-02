@@ -201,20 +201,14 @@ def parse_kscreen_text(text):
     return _finish_screens(outputs)
 
 
-def _rotated(width, height, rotation):
-    if isinstance(rotation, str):
-        swap = rotation.lower() in {"left", "right", "2", "8"}
-    else:
-        swap = int(rotation or 1) in {2, 8}
-    return (height, width) if swap else (width, height)
-
-
 def parse_kscreen_json(text):
     """Parse `kscreen-doctor -j` (KScreen::ConfigSerializer).
 
-    `size` is the current mode in hardware pixels. The on-screen rectangle is
-    that size divided by `scale`, with width and height swapped for a 90° or
-    270° rotation. That matches the Geometry line of `kscreen-doctor -o`.
+    `size` is Output::size(): hardware pixels of the current mode, already
+    transposed when rotation is Left (2) or Right (8). The Geometry line of
+    `kscreen-doctor -o` is that size divided by `scale`, at `pos`. Swapping
+    on rotation again turns a portrait panel (Melchior DP-3: size 1080x1920,
+    rotation 8, scale 1.25, Geometry 864x1536) into a landscape one.
     """
     try:
         data = json.loads(text)
@@ -240,7 +234,6 @@ def parse_kscreen_json(text):
             height = int(round(float(size.get("height") or 0) / scale))
         except (TypeError, ValueError):
             continue
-        width, height = _rotated(width, height, output.get("rotation", 1))
         priority = output.get("priority") or 0
         try:
             priority = int(priority)
