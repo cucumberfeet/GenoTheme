@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Prime42"
+            }
+        ],
+        "Category": "Windows and Tasks",
+        "Description": "A tiny virtual desktop indicator that shows one hollow or solid dot per desktop.",
+        "EnabledByDefault": true,
+        "FormFactors": [
+            "horizontal",
+            "vertical"
+        ],
+        "Icon": "preferences-desktop-virtual",
+        "Id": "net.prime42.plasma.dotdesktopindicator",
+        "License": "GPL-3.0-or-later",
+        "Name": "Dot Desktop Indicator"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

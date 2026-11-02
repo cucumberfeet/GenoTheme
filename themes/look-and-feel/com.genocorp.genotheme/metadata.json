@@ -3,7 +3,7 @@
     "KPlugin": {
         "Authors": [{"Name": "GenoCorp"}, {"Name": "Mathis Paquet (Daemon 2.0 base)"}],
         "Category": "Global Themes (Plasma 6)",
-        "Description": "GenoCorp corporate-dystopia theme, recoloured from Daemon 2.0",
+        "Description": "GenoCorp corporate-dystopia theme, recoloured from Daemon 2.0. Desktop layout (optional) reproduces the Balthasar panels.",
         "EnabledByDefault": true,
         "Id": "com.genocorp.genotheme",
         "License": "GPL-3.0-or-later",

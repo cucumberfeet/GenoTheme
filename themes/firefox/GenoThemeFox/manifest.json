@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "name": "GenoThemeFox",
+  "version": "1.0",
+  "description": "GenoTheme recolour of the Daemon 2.0 Firefox theme",
+  "author": "GenoCorp (recolour of Daemon 2.0 by Mathis Paquet)",
+  "theme": {
+    "images": {},
+    "properties": {},
+    "colors": {
+      "toolbar": "#080a24",
+      "toolbar_text": "#4d6bff",
+      "frame": "#080a24",
+      "tab_background_text": "#4d6bff",
+      "toolbar_field": "#020205",
+      "toolbar_field_text": "#4d6bff",
+      "tab_line": "#ff0000",
+      "popup": "#080a24",
+      "popup_text": "#4d6bff",
+      "tab_loading": "#ff0000"
+    }
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "genothemefox@genocorp"
+    }
+  }
+}
