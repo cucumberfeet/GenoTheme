@@ -5,7 +5,13 @@ GenoCorp's corporate-dystopia theme for **KDE Plasma 6**: near-black navy panels
 for warnings and active accents — matching the GenoCorp site and the *Manifesto* wallpaper
 ("Employee Engagement Commandments", NODE BARTHOLOMEW).
 
-![GenoTheme on Bartholomew](screens/genotheme-main-screen.jpg)
+![GenoTheme desktop](screens/main-monitor.png)
+
+| Dolphin | Konsole |
+|---|---|
+| ![Dolphin](screens/dolphin.png) | ![Konsole](screens/konsole.png) |
+| **Dock** | **System monitor widget** |
+| ![Dock](screens/dock.png) | ![Widget](screens/widget.png) |
 
 ## What's in it
 
