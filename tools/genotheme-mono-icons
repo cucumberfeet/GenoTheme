@@ -5,13 +5,16 @@ Scans the installed apps (.desktop files in the system, user and Flatpak applica
 each Icon= through the icon theme chain and writes a flat one-colour (GenoCorp blue) version into a
 user-level icon theme layer, ~/.local/share/icons/GenoTheme-Mono, which inherits GenoTheme-Icons.
 
-Per app, in order:
-  1. A hand-made GenoTheme icon that is already clean one-colour art keeps winning (nothing is generated).
-  2. The app's own symbolic icon (<name>-symbolic.svg), recoloured.
-  3. Otherwise a monochrome icon derived from the full-colour one (silhouette + inner detail; app icons
-     that sit on a coloured plate become a ring plus glyph, like the Daemon-style GenoTheme icons).
-  4. Photos, game art and very detailed icons would only become a meaningless blob: those keep their
-     original colour icon and are listed in the report.
+Every app icon starts from the app's own stock icon, never from the hand-made GenoTheme/Daemon redesigns:
+  1. The app's own symbolic icon (<name>-symbolic.svg), recoloured.
+  2. Otherwise the app's own full-colour icon (hicolor, the app's install, Flatpak exports, then the KDE/GNOME
+     stock themes) becomes a flat one-colour icon: silhouette + inner detail, or ring + glyph for icons on a plate.
+  3. Photos, game art and very detailed icons would only become a meaningless blob: those keep their original
+     colour icon (copied into the layer, so no GenoTheme redesign leaks through) and are listed in the report.
+  4. Apps with no stock icon anywhere fall back to the GenoTheme/Daemon icon and are listed in the report.
+The layer overrides GenoTheme-Icons for every app icon name, including alternate names (steam,
+com.valvesoftware.Steam, firefox, org.mozilla.firefox ...). Non-app icons (actions, places, mimetypes, devices,
+tray, Plasma UI, category icons) are left to GenoTheme.
 
 usage:
   genotheme-mono-icons run [--activate] [--force] [--dry-run] [--delay SECONDS]
@@ -81,7 +84,7 @@ def parse_desktop(path):
 
 
 def scan_apps():
-    """-> {icon_name_or_path: [desktop ids]}, list of skipped"""
+    """-> {icon: {"names": [app names], "aliases": {desktop id stem, StartupWMClass ...}}}"""
     icons, seen = {}, set()
     for d in application_dirs():
         if not d.is_dir():
@@ -94,14 +97,22 @@ def scan_apps():
             e = parse_desktop(p)
             if not e or e.get("Type", "Application") != "Application":
                 continue
-            if e.get("NoDisplay", "").lower() == "true" or e.get("Hidden", "").lower() == "true":
+            if e.get("Hidden", "").lower() == "true":
                 continue
             if did.startswith("kcm_") or "KCModule" in e.get("X-KDE-ServiceTypes", ""):
                 continue
             icon = e.get("Icon")
             if not icon:
                 continue
-            icons.setdefault(icon, []).append(e.get("Name", did))
+            rec = icons.setdefault(icon, {"names": [], "aliases": set(), "visible": False})
+            rec["names"].append(e.get("Name", did))
+            if e.get("NoDisplay", "").lower() != "true":
+                rec["visible"] = True
+            if not did.lower().startswith(("steam_app", "steam_icon")) and "steam://" not in e.get("Exec", ""):
+                rec["aliases"].add(p.stem)
+                wm = e.get("StartupWMClass")
+                if wm:
+                    rec["aliases"].update({wm, wm.lower()})
     return icons
 
 
@@ -126,18 +137,26 @@ def theme_inherits(roots, name):
     return []
 
 
+STOCK_THEMES = ["hicolor", "breeze", "breeze-dark", "Adwaita", "gnome"]   # the apps' own / the desktop's stock icons
+NON_STOCK_FALLBACKS = ["Papirus", "Papirus-Dark"]                              # third-party redesigns, last resort
+# names that are Plasma UI / menu-category icons, not app launchers: GenoTheme keeps them
+UI_PREFIXES = ("applications-", "preferences-", "start-here")
+# the same app under several icon names: an override for one is written for all of them
+ALIAS_GROUPS = [
+    {"steam", "com.valvesoftware.Steam", "steam-launcher", "steam-icon", "steampowered"},
+    {"firefox", "org.mozilla.firefox", "mozilla-firefox", "firefox-esr", "firefox-default", "firefox-icon", "org.mozilla.Firefox"},
+    {"discord", "com.discordapp.Discord", "discord-canary", "discord-ptb"},
+    {"brave-browser", "com.brave.Browser", "brave", "brave-desktop"},
+    {"com.obsproject.Studio", "obs", "obs-studio"},
+    {"org.kde.dolphin", "dolphin", "system-file-manager"},
+    {"org.kde.konsole", "konsole", "utilities-terminal"},
+]
+
+
 def theme_chain(roots, base, own):
-    chain, todo = [], [base]
-    while todo:
-        t = todo.pop(0)
-        if t in chain or t == own:
-            continue
-        chain.append(t)
-        todo += theme_inherits(roots, t)
-    for t in EXTRA_THEMES:
-        if t not in chain:
-            chain.append(t)
-    return chain
+    stock = [t for t in STOCK_THEMES if any((r / t / "index.theme").is_file() for r in roots)]
+    fallback = [t for t in NON_STOCK_FALLBACKS if any((r / t / "index.theme").is_file() for r in roots)]
+    return stock, fallback
 
 
 SIZE_RE = re.compile(r"^(\d+)(?:x\d+)?(?:@\d+x?)?$")
@@ -551,17 +570,64 @@ def file_sig(path):
     return f"{st.st_size}:{int(st.st_mtime)}"
 
 
+ALGO = "2"   # bump when the derivation changes, so cached results are rebuilt
+LAYER_DIRS = ["scalable/apps"] + [f"{s}x{s}/apps" for s in SIZES]
+
+
+def layer_files(layer, name):
+    return [layer / d / f"{name}{e}" for d in LAYER_DIRS for e in (".svg", ".png")]
+
+
+def has_output(layer, name):
+    return any(f.exists() for f in layer_files(layer, name))
+
+
+def clear_output(layer, name):
+    for f in layer_files(layer, name):
+        f.unlink(missing_ok=True)
+
+
+def install_stock_colour(src, layer, name):
+    """Copy the app's own colour icon into the layer so nothing from GenoTheme-Icons shows through."""
+    clear_output(layer, name)
+    if str(src).lower().endswith((".svg", ".svgz")):
+        d = layer / "scalable/apps"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.svg").write_text(svg_text(src))
+        return
+    im = render(src, 256)
+    for s in SIZES:
+        d = layer / f"{s}x{s}/apps"
+        d.mkdir(parents=True, exist_ok=True)
+        im.resize((s, s), Image.LANCZOS).save(d / f"{name}.png", optimize=True)
+
+
+def copy_output(layer, src_name, dst_name):
+    clear_output(layer, dst_name)
+    ok = False
+    for f in layer_files(layer, src_name):
+        if f.exists():
+            t = f.with_name(dst_name + f.suffix)
+            shutil.copyfile(f, t)
+            ok = True
+    return ok
+
+
+def family_key(name):
+    last = name.split(".")[-1] if name.count(".") >= 2 else name
+    return last.lower()
+
+
 def run(args):
     if args.delay:
         time.sleep(args.delay)
     color = args.color.lower()
     layer = Path(args.layer or DATA_HOME / "icons" / args.theme)
     roots = icon_roots()
-    chain = theme_chain(roots, args.base, args.theme)
-    hand_themes = [args.base]
-    other = [t for t in chain if t != args.base]
-    log("theme chain:", " > ".join(chain))
-    index = Index(roots, chain)
+    stock, fallback = theme_chain(roots, args.base, args.theme)
+    themes = stock + fallback + [args.base]
+    log("stock icon themes:", " > ".join(stock), "| fallbacks:", " > ".join(fallback + [args.base]))
+    index = Index(roots, themes)
     apps = scan_apps()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     mf = STATE_DIR / "manifest.json"
@@ -571,91 +637,141 @@ def run(args):
             manifest = json.loads(mf.read_text())
         except ValueError:
             manifest = {}
-    if manifest.get("_color") != color:
+    if manifest.get("_color") != color or manifest.get("_algo") != ALGO:
         manifest = {}
-    new = {"_color": color}
+    new = {"_color": color, "_algo": ALGO}
     report = []
+    produced = set()      # names that have files in the layer
     changed = False
+    geno_names = set(index.data[args.base])
+    geno_real = {}
+    for name in geno_names:
+        for sz, path, sym in index.data[args.base][name]:
+            if not sym:
+                geno_real.setdefault(os.path.realpath(path), set()).add(name)
 
-    for icon, names in sorted(apps.items()):
-        rec = {"icon": icon, "apps": sorted(set(names))[:4]}
+    for icon, info in sorted(apps.items()):
+        rec = {"icon": icon, "apps": sorted(set(info["names"]))[:4], "hidden": not info["visible"]}
         if os.path.isabs(icon):
-            rec.update(status="colour", why="Icon= is an absolute file path, the theme cannot override it")
+            rec.update(status="colour", why="Icon= is an absolute file path to the app's own icon, nothing to override")
             report.append(rec)
             continue
         if icon.endswith(EXTS):
             icon = os.path.splitext(icon)[0]
-        hand = index.find(args.base, icon)
-        if hand and handmade_is_clean(hand):
-            rec.update(status="hand-made", why="clean hand-made GenoTheme icon kept", source=hand)
+            rec["icon"] = icon
+        if icon.startswith(UI_PREFIXES):
+            rec.update(status="ui", why="Plasma UI / category icon name, left to GenoTheme")
             report.append(rec)
             continue
-        sym = index.find_symbolic(icon, other + [args.base])
+        old = manifest.get(icon)
+        sym = index.find_symbolic(icon, stock + fallback)
         if sym and str(sym).endswith((".svg", ".svgz")):
             sig = f"sym:{sym}:{file_sig(sym)}"
-            old = manifest.get(icon)
             dest = layer / "scalable/apps" / f"{icon}.svg"
             if not (old and old.get("sig") == sig and dest.exists()):
                 if not args.dry_run:
+                    clear_output(layer, icon)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(recolour_svg(svg_text(sym), color))
                 changed = True
             new[icon] = {"sig": sig, "kind": "symbolic"}
-            rec.update(status="symbolic", why="recoloured the app's symbolic icon", source=sym)
+            produced.add(icon)
+            rec.update(status="symbolic", why="recoloured the app's own symbolic icon", source=sym)
             report.append(rec)
             continue
-        src, th = index.find_color(icon, [t for t in chain if t != args.base])
-        tinted = False
-        if not src and hand:
-            src, th, tinted = hand, args.base, True
+        src, th = index.find_color(icon, stock)
+        nonstock = None
         if not src:
-            rec.update(status="missing", why="no icon found in the theme chain")
+            src, th = index.find_color(icon, fallback)
+            nonstock = th if src else None
+        geno_src = None
+        if not src:
+            g = index.find(args.base, icon)
+            if g:
+                src, th, geno_src = g, args.base, True
+        if not src:
+            rec.update(status="missing", why="no icon found anywhere")
             report.append(rec)
             continue
+        flag = ""
+        if nonstock:
+            flag = f"no stock icon, used {nonstock} instead"
+        elif geno_src:
+            flag = "no stock icon anywhere, used the GenoTheme/Daemon icon"
         sig = f"mono:{src}:{file_sig(src)}:{color}"
-        old = manifest.get(icon)
-        if old and old.get("sig") == sig and old.get("kind") in ("mono", "blob"):
-            if old["kind"] == "mono" and (layer / "256x256/apps" / f"{icon}.png").exists():
-                new[icon] = old
-                rec.update(status="mono", why=old.get("why", ""), source=src)
-                report.append(rec)
-                continue
-            if old["kind"] == "blob":
-                new[icon] = old
-                rec.update(status="colour", why=old.get("why", ""), source=src)
-                report.append(rec)
-                continue
-        try:
-            mask, info = derive_mask(render(src, W))
-        except Exception as e:  # unreadable source
-            mask, info = None, {"reason": f"could not render source ({type(e).__name__})"}
-        if mask is None:
-            new[icon] = {"sig": sig, "kind": "blob", "why": info.get("reason", "")}
-            rec.update(status="colour", why=info.get("reason", ""), source=src)
-            if not args.dry_run:
-                for d in [layer / "scalable/apps"] + [layer / f"{s}x{s}/apps" for s in SIZES]:
-                    for e in (".svg", ".png"):
-                        (d / f"{icon}{e}").unlink(missing_ok=True)
+        if old and old.get("sig") == sig and old.get("kind") in ("mono", "blob") and (has_output(layer, icon) or (geno_src and old.get("kind") == "blob")):
+            kind, why = old["kind"], old.get("why", "")
         else:
-            if not args.dry_run:
-                write_mask_png(mask, color, layer, icon)
-                (layer / "scalable/apps" / f"{icon}.svg").unlink(missing_ok=True)
-            changed = True
-            why = f"derived from {'tinted hand-made ' if tinted else ''}{th} icon ({info.get('style')})"
-            new[icon] = {"sig": sig, "kind": "mono", "why": why}
-            rec.update(status="mono", why=why, source=src)
+            if geno_src and handmade_is_clean(src):
+                # already flat one-colour art: only recolour it
+                if not args.dry_run:
+                    clear_output(layer, icon)
+                    d = layer / "scalable/apps"
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / f"{icon}.svg").write_text(recolour_svg(svg_text(src), color))
+                kind, why, changed = "mono", "GenoTheme/Daemon icon recoloured (no stock icon)", True
+            else:
+                try:
+                    mask, dinfo = derive_mask(render(src, W))
+                except Exception as e:
+                    mask, dinfo = None, {"reason": f"could not render source ({type(e).__name__})"}
+                if mask is None:
+                    kind, why = "blob", dinfo.get("reason", "")
+                    if not args.dry_run and not geno_src:
+                        install_stock_colour(src, layer, icon)
+                    elif not args.dry_run:
+                        clear_output(layer, icon)
+                else:
+                    kind = "mono"
+                    why = f"derived from {th} icon ({dinfo.get('style')})"
+                    if not args.dry_run:
+                        clear_output(layer, icon)
+                        write_mask_png(mask, color, layer, icon)
+                changed = True
+        new[icon] = {"sig": sig, "kind": kind, "why": why}
+        produced.add(icon) if (kind == "mono" or (kind == "blob" and not geno_src)) else None
+        rec.update(status="mono" if kind == "mono" else "colour", why=why, source=src, note=flag)
+        if flag:
+            rec["nostock"] = flag
         report.append(rec)
 
-    # drop generated icons of apps that are gone
+    # alternate names of the same app, so no GenoTheme redesign leaks through inherit
+    app_icons = {r["icon"] for r in report}
+    aliased = {}
+    if not args.dry_run:
+        for r in report:
+            n = r["icon"]
+            if n not in produced:
+                continue
+            cand = set()
+            for grp in ALIAS_GROUPS:
+                if n in grp:
+                    cand |= grp
+            cand |= apps.get(n, {}).get("aliases", set())
+            key = family_key(n)
+            if len(key) >= 4:
+                for real in {os.path.realpath(p) for sz, p, sym in index.data[args.base].get(n, []) if not sym}:
+                    cand |= {m for m in geno_real.get(real, ()) if key in m.lower()}
+            cand = {m for m in cand if m != n and m in geno_names and m not in app_icons and not m.startswith(UI_PREFIXES)}
+            for m in sorted(cand):
+                if copy_output(layer, n, m):
+                    produced.add(m)
+                    aliased.setdefault(n, []).append(m)
+                    changed = True
+            if aliased.get(n):
+                r["aliases"] = aliased[n]
+
+    # drop layer files that are no longer wanted (apps removed, names that went back to GenoTheme)
     removed = 0
-    for icon in [k for k in manifest if not k.startswith("_") and k not in new]:
-        for d in [layer / "scalable/apps"] + [layer / f"{s}x{s}/apps" for s in SIZES]:
-            for e in (".svg", ".png"):
-                f = d / f"{icon}{e}"
-                if f.exists():
-                    if not args.dry_run:
-                        f.unlink()
-                    removed += 1
+    if layer.is_dir():
+        for d in LAYER_DIRS:
+            dd = layer / d
+            if dd.is_dir():
+                for f in dd.iterdir():
+                    if f.stem not in produced and f.suffix in (".svg", ".png"):
+                        if not args.dry_run:
+                            f.unlink()
+                        removed += 1
     if removed:
         changed = True
 
@@ -666,7 +782,7 @@ def run(args):
     first = not (layer / "index.theme").exists()
     write_index(layer, args.theme, args.base)
     mf.write_text(json.dumps(new, indent=1))
-    write_report(report, args, chain)
+    write_report(report, args, stock, fallback)
     if changed or first or args.force:
         refresh_kde(layer)
     if args.activate:
@@ -678,20 +794,33 @@ def run(args):
     return 0
 
 
-def write_report(report, args, chain):
+def write_report(report, args, stock, fallback):
     now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    groups = {"mono": "Monochrome (derived from the colour icon)", "symbolic": "Monochrome (app's own symbolic icon)",
-              "hand-made": "Hand-made GenoTheme icon kept", "colour": "Left in colour", "missing": "No icon found"}
-    lines = [f"# GenoTheme monochrome icons: {now}", "", f"Icon theme chain: {' > '.join(chain)}", ""]
+    groups = {"mono": "Monochrome (derived from the app's stock icon)", "symbolic": "Monochrome (app's own symbolic icon)",
+              "colour": "Left in colour (the app's stock colour icon)", "ui": "Plasma UI / category icon names, left to GenoTheme",
+              "missing": "No icon found"}
+    lines = [f"# GenoTheme monochrome icons: {now}", "",
+             f"Stock icon themes: {' > '.join(stock)}. Fallbacks: {' > '.join(fallback + [args.base])}", ""]
+    nostock = [r for r in report if r.get("nostock")]
     for k, title in groups.items():
         rows = [r for r in report if r["status"] == k]
         lines.append(f"## {title} ({len(rows)})")
         lines.append("")
         for r in rows:
-            lines.append(f"- `{r['icon']}` ({', '.join(r['apps'])})" + (f": {r['why']}" if r.get("why") and k in ("colour", "missing", "mono") else ""))
+            extra = f": {r['why']}" if r.get("why") and k in ("colour", "missing", "mono", "ui") else ""
+            if r.get("nostock"):
+                extra += f" [{r['nostock']}]"
+            if r.get("aliases"):
+                extra += f" (also {', '.join(r['aliases'])})"
+            lines.append(f"- `{r['icon']}` ({', '.join(r['apps'])}){' [hidden entry]' if r.get('hidden') else ''}{extra}")
         lines.append("")
+    lines.append(f"## Apps with no stock icon ({len(nostock)})")
+    lines.append("")
+    for r in nostock:
+        lines.append(f"- `{r['icon']}` ({', '.join(r['apps'])}): {r['nostock']}")
+    lines.append("")
     (STATE_DIR / "report.md").write_text("\n".join(lines))
-    (STATE_DIR / "report.json").write_text(json.dumps(report, indent=1))
+    (STATE_DIR / "report.json").write_text(json.dumps(report, indent=1, default=str))
 
 
 def print_report(report):

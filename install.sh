@@ -159,12 +159,15 @@ install_mono_icons() {
     return 0
   fi
   local bk="$HOME/Backups/genotheme-mono-icons-$(date +%Y%m%d-%H%M%S)"
+  local prev_theme
+  prev_theme=$(kreadconfig6 --file kdeglobals --group Icons --key Theme 2>/dev/null || true)
+  [[ -z $prev_theme || $prev_theme == GenoTheme-Mono ]] && prev_theme=GenoTheme-Icons
   local unitdir="$C/systemd/user" bindir="$HOME/.local/bin"
   mkdir -p "$bk" "$unitdir" "$bindir"
   [[ -f $C/kdeglobals ]] && cp -a "$C/kdeglobals" "$bk/kdeglobals"
   [[ -d $D/icons/GenoTheme-Icons ]] && tar -C "$D/icons" -czf "$bk/GenoTheme-Icons.tar.gz" GenoTheme-Icons
   [[ -d $D/icons/GenoTheme-Mono ]] && tar -C "$D/icons" -czf "$bk/GenoTheme-Mono.tar.gz" GenoTheme-Mono
-  # the hand-made GenoTheme icons always win, so make sure the installed copy is current
+  # keep the installed GenoTheme-Icons (non-app icons, and the inherit base of the mono layer) current
   rm -rf "$D/icons/GenoTheme-Icons"
   cp -a "$T/icons/GenoTheme-Icons" "$D/icons/"
   install -m755 "$ROOT/tools/genotheme-mono-icons" "$bindir/genotheme-mono-icons"
@@ -175,14 +178,14 @@ install_mono_icons() {
 # remove the generated layer and the tool, put back the GenoTheme-Icons copy saved here.
 set -u
 systemctl --user disable --now genotheme-mono-icons.path genotheme-mono-icons.service 2>/dev/null
-"$bindir/genotheme-mono-icons" undo --purge --fallback GenoTheme-Icons 2>/dev/null || {
-  kwriteconfig6 --file kdeglobals --group Icons --key Theme GenoTheme-Icons
+"$bindir/genotheme-mono-icons" undo --purge --fallback $prev_theme 2>/dev/null || {
+  kwriteconfig6 --file kdeglobals --group Icons --key Theme $prev_theme
   rm -rf "$D/icons/GenoTheme-Mono" "$D/genotheme-mono-icons"
 }
 rm -f "$unitdir/genotheme-mono-icons.service" "$unitdir/genotheme-mono-icons.path" "$bindir/genotheme-mono-icons"
 systemctl --user daemon-reload
 [[ -f "$bk/GenoTheme-Icons.tar.gz" ]] && { rm -rf "$D/icons/GenoTheme-Icons"; tar -C "$D/icons" -xzf "$bk/GenoTheme-Icons.tar.gz"; }
-[[ -f "$bk/kdeglobals" ]] && kwriteconfig6 --file kdeglobals --group Icons --key Theme "\$(kreadconfig6 --file "$bk/kdeglobals" --group Icons --key Theme)"
+kwriteconfig6 --file kdeglobals --group Icons --key Theme $prev_theme
 kbuildsycoca6 >/dev/null 2>&1
 for g in 0 1 2 3 4 5; do dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:\$g 2>/dev/null; done
 echo "Monochrome app icons removed. Log out and in (or restart plasmashell) if some icons still look blue."
