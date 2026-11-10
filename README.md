@@ -78,6 +78,32 @@ Restart already-open Qt apps (Dolphin, Konsole, …) to pick up Kvantum.
 System Monitor widgets store their own sensor colours. GenoTheme uses `77,107,255` (blue) for the
 primary sensor, `255,0,0` (red) for secondary series and `106,112,149` (muted) for background series.
 
+## Monochrome app icons (like Android's themed icons)
+
+`tools/genotheme-mono-icons` gives every installed app a flat one-colour GenoCorp-blue icon automatically, so nobody
+has to draw an icon per app. It scans the `.desktop` files (system, `~/.local/share/applications`, system and user
+Flatpak exports), resolves each `Icon=` through the icon theme chain and writes the result into a user-level layer,
+`~/.local/share/icons/GenoTheme-Mono`, which inherits `GenoTheme-Icons` and becomes the active icon theme. Per app:
+
+1. A clean hand-made GenoTheme icon (one-colour art) keeps winning, and nothing is generated for it.
+2. The app's own symbolic icon (`<name>-symbolic.svg`) is recoloured.
+3. Otherwise a mono icon is derived from the colour icon: the silhouette with the inner detail cut out, or, for an app
+   icon that sits on a coloured plate, a ring plus the glyph (the Daemon-style look the other icons have).
+4. Photos, game art and very detailed icons would only turn into a blob, so they stay in colour and are listed in
+   `~/.local/share/genotheme-mono-icons/report.md`.
+
+```
+./install.sh --mono-icons       # install the tool, the layer and the units, make it the active icon theme
+genotheme-mono-icons run        # rebuild now (--force regenerates everything, --dry-run only reports)
+genotheme-mono-icons status     # show the last report
+~/Backups/genotheme-mono-icons-<date>/undo.sh   # written by the installer, puts everything back
+```
+
+A systemd user path unit (`genotheme-mono-icons.path`) watches the application dirs, including the Flatpak exports,
+and reruns the generator when an app is installed or removed. The same service also runs at every login. It refreshes
+the icon cache and KDE (`kbuildsycoca6` plus the icon-changed signal), so plasmashell is not restarted. Needs
+python3, Pillow and ImageMagick (or `rsvg-convert`). Accent colour: `--color '#4d6bff'`.
+
 ## Rebuilding from Daemon 2.0
 
 Everything under `themes/` (except the hand-written files in `tools/static/`) is generated:

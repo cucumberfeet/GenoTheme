@@ -1,0 +1,16 @@
+[Unit]
+Description=GenoTheme monochrome app icons (rebuild the GenoTheme-Mono icon layer)
+Documentation=https://github.com/cucumberfeet/GenoTheme
+
+[Service]
+Type=oneshot
+# The wait lets a burst of installs finish, so one run covers them all.
+ExecStart=/bin/sh -c 'exec "$(command -v genotheme-mono-icons || echo "$HOME/.local/bin/genotheme-mono-icons")" run --delay 8'
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=600
+StartLimitIntervalSec=0
+
+[Install]
+# runs at every login
+WantedBy=default.target
