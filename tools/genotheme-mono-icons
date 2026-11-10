@@ -1,0 +1,878 @@
+#!/usr/bin/env python3
+"""genotheme-mono-icons: automatic monochrome app icons for GenoTheme (like Android themed icons).
+
+Scans the installed apps (.desktop files in the system, user and Flatpak application dirs), resolves
+each Icon= through the icon theme chain and writes a flat one-colour (GenoCorp blue) version into a
+user-level icon theme layer, ~/.local/share/icons/GenoTheme-Mono, which inherits GenoTheme-Icons.
+
+Every app icon starts from the app's own stock icon, never from the hand-made GenoTheme/Daemon redesigns:
+  1. The app's own symbolic icon (<name>-symbolic.svg), recoloured.
+  2. Otherwise the app's own full-colour icon (hicolor, the app's install, Flatpak exports, then the KDE/GNOME
+     stock themes) becomes a flat one-colour icon: silhouette + inner detail, or ring + glyph for icons on a plate.
+  3. Photos, game art and very detailed icons would only become a meaningless blob: those keep their original
+     colour icon (copied into the layer, so no GenoTheme redesign leaks through) and are listed in the report.
+  4. Apps with no stock icon anywhere fall back to the GenoTheme/Daemon icon and are listed in the report.
+The layer overrides GenoTheme-Icons for every app icon name, including alternate names (steam,
+com.valvesoftware.Steam, firefox, org.mozilla.firefox ...). Non-app icons (actions, places, mimetypes, devices,
+tray, Plasma UI, category icons) are left to GenoTheme.
+
+usage:
+  genotheme-mono-icons run [--activate] [--force] [--dry-run] [--delay SECONDS]
+  genotheme-mono-icons status            print the last report
+  genotheme-mono-icons undo [--purge]    switch back to the icon theme used before, optionally delete the layer
+
+Needs python3 + Pillow and ImageMagick (magick, or rsvg-convert) to render SVG sources. No root.
+"""
+import argparse, colorsys, datetime, hashlib, io, json, math, os, re, shutil, subprocess, sys, time
+from pathlib import Path
+
+try:
+    from PIL import Image, ImageChops, ImageFilter
+except ImportError:
+    sys.exit("genotheme-mono-icons needs Pillow (python3-pillow).")
+
+HOME = Path.home()
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+STATE_DIR = DATA_HOME / "genotheme-mono-icons"
+DEFAULT_COLOR = "#4d6bff"
+DEFAULT_THEME = "GenoTheme-Mono"
+DEFAULT_BASE = "GenoTheme-Icons"
+EXTRA_THEMES = ["Papirus", "Papirus-Dark", "Adwaita", "breeze", "hicolor"]
+SIZES = [32, 48, 64, 128, 256]
+W = 256            # working resolution for the analysis
+OUT = 512          # mask resolution before downscaling to the shipped sizes
+SKIP_DIRS = {"cursors", "animations", "emotes", "emblems", "actions", "status", "panel", "notifications"}
+
+
+def log(*a):
+    print("genotheme-mono-icons:", *a, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- apps
+def xdg_data_dirs():
+    dirs = [DATA_HOME]
+    dirs += [Path(p) for p in (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":") if p]
+    for extra in (HOME / ".local/share/flatpak/exports/share", Path("/var/lib/flatpak/exports/share"),
+                  Path("/usr/local/share"), Path("/usr/share")):
+        if extra not in dirs:
+            dirs.append(extra)
+    return [d for d in dirs]
+
+
+def application_dirs():
+    return [d / "applications" for d in xdg_data_dirs()]
+
+
+def parse_desktop(path):
+    entry, in_entry = {}, False
+    try:
+        for line in path.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("["):
+                if in_entry:
+                    break
+                in_entry = line == "[Desktop Entry]"
+                continue
+            if in_entry and "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                if "[" not in k and k not in entry:
+                    entry[k.strip()] = v.strip()
+    except OSError:
+        return None
+    return entry
+
+
+def scan_apps():
+    """-> {icon: {"names": [app names], "aliases": {desktop id stem, StartupWMClass ...}}}"""
+    icons, seen = {}, set()
+    for d in application_dirs():
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob("*.desktop")):
+            did = p.name
+            if did in seen:
+                continue
+            seen.add(did)
+            e = parse_desktop(p)
+            if not e or e.get("Type", "Application") != "Application":
+                continue
+            if e.get("Hidden", "").lower() == "true":
+                continue
+            if did.startswith("kcm_") or "KCModule" in e.get("X-KDE-ServiceTypes", ""):
+                continue
+            icon = e.get("Icon")
+            if not icon:
+                continue
+            rec = icons.setdefault(icon, {"names": [], "aliases": set(), "visible": False})
+            rec["names"].append(e.get("Name", did))
+            if e.get("NoDisplay", "").lower() != "true":
+                rec["visible"] = True
+            if not did.lower().startswith(("steam_app", "steam_icon")) and "steam://" not in e.get("Exec", ""):
+                rec["aliases"].add(p.stem)
+                wm = e.get("StartupWMClass")
+                if wm:
+                    rec["aliases"].update({wm, wm.lower()})
+    return icons
+
+
+# ---------------------------------------------------------------- icon lookup
+def icon_roots():
+    roots = [HOME / ".icons"] + [d / "icons" for d in xdg_data_dirs()]
+    out = []
+    for r in roots:
+        if r.is_dir() and r not in out:
+            out.append(r)
+    return out
+
+
+def theme_inherits(roots, name):
+    for r in roots:
+        f = r / name / "index.theme"
+        if f.is_file():
+            for line in f.read_text(errors="replace").splitlines():
+                if line.startswith("Inherits="):
+                    return [t.strip() for t in line.split("=", 1)[1].split(",") if t.strip()]
+            return []
+    return []
+
+
+STOCK_THEMES = ["hicolor", "breeze", "breeze-dark", "Adwaita", "gnome"]   # the apps' own / the desktop's stock icons
+NON_STOCK_FALLBACKS = ["Papirus", "Papirus-Dark"]                              # third-party redesigns, last resort
+# names that are Plasma UI / menu-category icons, not app launchers: GenoTheme keeps them
+UI_PREFIXES = ("applications-", "preferences-", "start-here")
+# the same app under several icon names: an override for one is written for all of them
+ALIAS_GROUPS = [
+    {"steam", "com.valvesoftware.Steam", "steam-launcher", "steam-icon", "steampowered"},
+    {"firefox", "org.mozilla.firefox", "mozilla-firefox", "firefox-esr", "firefox-default", "firefox-icon", "org.mozilla.Firefox"},
+    {"discord", "com.discordapp.Discord", "discord-canary", "discord-ptb"},
+    {"brave-browser", "com.brave.Browser", "brave", "brave-desktop"},
+    {"com.obsproject.Studio", "obs", "obs-studio"},
+    {"org.kde.dolphin", "dolphin", "system-file-manager"},
+    {"org.kde.konsole", "konsole", "utilities-terminal"},
+]
+
+
+def theme_chain(roots, base, own):
+    stock = [t for t in STOCK_THEMES if any((r / t / "index.theme").is_file() for r in roots)]
+    fallback = [t for t in NON_STOCK_FALLBACKS if any((r / t / "index.theme").is_file() for r in roots)]
+    return stock, fallback
+
+
+SIZE_RE = re.compile(r"^(\d+)(?:x\d+)?(?:@\d+x?)?$")
+EXTS = (".svg", ".svgz", ".png", ".xpm", ".ico")
+
+
+class Index:
+    """name -> candidates [(size|9999 for scalable, path, symbolic?)] per theme, built from one walk."""
+
+    def __init__(self, roots, themes):
+        self.themes = themes
+        self.data = {t: {} for t in themes}
+        for t in themes:
+            for r in roots:
+                base = r / t
+                if base.is_dir():
+                    self._walk(base, t)
+        self.pixmaps = {}
+        for d in [Path("/usr/share/pixmaps"), DATA_HOME / "pixmaps"]:
+            if d.is_dir():
+                for f in d.iterdir():
+                    if f.suffix.lower() in EXTS:
+                        self.pixmaps.setdefault(f.stem, f)
+
+    def _walk(self, base, theme):
+        for dirpath, dirnames, files in os.walk(base):
+            rel = Path(dirpath).relative_to(base).parts
+            if any(p in SKIP_DIRS for p in rel):
+                dirnames[:] = []
+                continue
+            size = None
+            for part in rel:
+                if part == "scalable":
+                    size = 9999
+                else:
+                    m = SIZE_RE.match(part)
+                    if m and size is None:
+                        size = int(m.group(1))
+            if size is None:
+                size = 9999 if "symbolic" in rel else 0
+            sym_dir = "symbolic" in rel
+            for f in files:
+                stem, ext = os.path.splitext(f)
+                if ext.lower() not in EXTS:
+                    continue
+                is_sym = sym_dir or stem.endswith("-symbolic")
+                if stem.endswith(".symbolic"):
+                    is_sym = True
+                    stem = stem[:-9]
+                if ext.lower() in (".svg", ".svgz"):
+                    s = size if size else 9999
+                else:
+                    s = size
+                self.data[theme].setdefault(stem, []).append((s, os.path.join(dirpath, f), is_sym))
+
+    def find(self, theme, name, symbolic=False):
+        c = [x for x in self.data.get(theme, {}).get(name, []) if x[2] == symbolic]
+        if not c:
+            return None
+        c.sort(key=lambda x: (x[0], x[1].endswith(".svg")), reverse=True)
+        return c[0][1]
+
+    def find_symbolic(self, name, themes):
+        for t in themes:
+            p = self.find(t, name + "-symbolic", symbolic=True) or self.find(t, name + "-symbolic")
+            if p:
+                return p
+        return None
+
+    def find_color(self, name, themes):
+        for t in themes:
+            p = self.find(t, name)
+            if p:
+                return p, t
+        if name in self.pixmaps:
+            return str(self.pixmaps[name]), "pixmaps"
+        return None, None
+
+
+# ---------------------------------------------------------------- SVG helpers
+COLOR_ATTR = re.compile(r"(?P<k>\b(?:fill|stroke|stop-color|flood-color|lighting-color|color))(?P<sep>\s*[:=]\s*)(?P<q>[\"']?)(?P<v>#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|hsla?\([^)]*\)|[a-zA-Z]+)(?P=q)?")
+KEEP_VALUES = {"none", "transparent", "inherit", "initial", "unset"}
+
+
+def svg_text(path):
+    data = Path(path).read_bytes()
+    if data[:2] == b"\x1f\x8b":
+        import gzip
+        data = gzip.decompress(data)
+    return data.decode("utf-8", errors="replace")
+
+
+def recolour_svg(text, color):
+    def sub(m):
+        v = m.group("v")
+        if v.lower() in KEEP_VALUES or v.startswith("url"):
+            return m.group(0)
+        if m.group("k") == "color" and m.group("sep").strip() == "=":
+            return m.group(0)
+        q = m.group("q")
+        return f'{m.group("k")}{m.group("sep")}{q}{color}{q}'
+    text = COLOR_ATTR.sub(sub, text)
+    # strip gradients' effect: anything still pointing at a paint server gets the flat colour
+    text = re.sub(r'(fill|stroke)(\s*[:=]\s*["\']?)url\([^)]*\)', lambda m: f"{m.group(1)}{m.group(2)}{color}", text)
+    # default paint for shapes with no fill (SVG default is black)
+    m = re.search(r"<svg\b[^>]*>", text)
+    if m and not re.search(r"\sfill\s*=", m.group(0)):
+        text = text[:m.start()] + m.group(0).replace("<svg", f'<svg fill="{color}"', 1) + text[m.end():]
+    return text
+
+
+def hex_to_hsv(h):
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    return colorsys.rgb_to_hsv(r, g, b)
+
+
+def handmade_is_clean(path):
+    """True if a GenoTheme icon is already flat one-colour art (blue, white/black/grey, GenoCorp red)."""
+    if not str(path).endswith((".svg", ".svgz")):
+        return False
+    t = svg_text(path)
+    if "<image" in t or "Gradient" in t or "<filter" in t or "data:image" in t:
+        return False
+    cols = set(re.findall(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b", t))
+    named = set(x.lower() for x in re.findall(r'(?:fill|stroke)\s*[:=]\s*["\']?([a-zA-Z]+)', t))
+    named -= {"none", "currentcolor", "white", "black", "transparent", "inherit", "evenodd", "nonzero", "round", "butt"}
+    if named:
+        return False
+    for c in cols:
+        h, s, v = hex_to_hsv(c)
+        if s < 0.25 or v < 0.2:
+            continue            # grey / white / black / navy-black
+        if 0.58 <= h <= 0.72:
+            continue            # blue family: #4d6bff, #0000ff, #9fb3ff
+        if c.lower() in ("#ff0000", "#f00"):
+            continue            # GenoCorp red accent
+        return False
+    return True
+
+
+# ---------------------------------------------------------------- rendering
+def svg_dims(text):
+    m = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[ ,]+[-\d.]+[ ,]+([\d.]+)[ ,]+([\d.]+)', text)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    w = re.search(r'\bwidth\s*=\s*["\']([\d.]+)', text)
+    h = re.search(r'\bheight\s*=\s*["\']([\d.]+)', text)
+    if w and h:
+        return float(w.group(1)), float(h.group(1))
+    return 48.0, 48.0
+
+
+def render_svg(path, size):
+    text = svg_text(path)
+    w, h = svg_dims(text)
+    dens = int(min(3000, max(72, 96 * size * 1.3 / max(w, h, 1))))
+    tmp = None
+    src = str(path)
+    if src.endswith("z"):
+        tmp = Path("/tmp") / f"gtmi-{os.getpid()}.svg"
+        tmp.write_text(text)
+        src = str(tmp)
+    try:
+        if shutil.which("rsvg-convert"):
+            cmd = ["rsvg-convert", "-w", str(size), "-h", str(size), "-a", "-f", "png", src]
+        else:
+            cmd = ["magick", "-background", "none", "-density", str(dens), src, "-resize", f"{size}x{size}", "png:-"]
+        r = subprocess.run(cmd, capture_output=True, timeout=60)
+        if r.returncode != 0 or not r.stdout:
+            raise RuntimeError(r.stderr.decode(errors="replace")[:200])
+        im = Image.open(io.BytesIO(r.stdout)).convert("RGBA")
+    finally:
+        if tmp:
+            tmp.unlink(missing_ok=True)
+    return fit(im, size)
+
+
+def fit(im, size):
+    im = im.convert("RGBA")
+    if im.width != size or im.height != size:
+        scale = size / max(im.size)
+        nw, nh = max(1, round(im.width * scale)), max(1, round(im.height * scale))
+        im = im.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        canvas.paste(im, ((size - nw) // 2, (size - nh) // 2))
+        im = canvas
+    return im
+
+
+def render(path, size=W):
+    p = str(path)
+    if p.lower().endswith((".svg", ".svgz")):
+        return render_svg(p, size)
+    im = Image.open(p)
+    try:
+        if p.lower().endswith(".ico"):
+            sizes = im.info.get("sizes") or []
+            if sizes:
+                im.size = max(sizes)
+                im.load()
+    except Exception:
+        pass
+    return fit(im, size)
+
+
+# ---------------------------------------------------------------- mono derivation
+def pix(im):
+    return list(im.get_flattened_data()) if hasattr(im, "get_flattened_data") else list(im.getdata())
+
+
+def erode(mask, n):
+    for _ in range(n):
+        mask = mask.filter(ImageFilter.MinFilter(3))
+    return mask
+
+
+def dilate(mask, n):
+    for _ in range(n):
+        mask = mask.filter(ImageFilter.MaxFilter(3))
+    return mask
+
+
+def kmeans2(samples):
+    lum = lambda p: 0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]
+    ca, cb = list(min(samples, key=lum)), list(max(samples, key=lum))
+    for _ in range(10):
+        ga, gb = [], []
+        for p in samples:
+            da = sum((p[i] - ca[i]) ** 2 for i in range(3))
+            db = sum((p[i] - cb[i]) ** 2 for i in range(3))
+            (ga if da <= db else gb).append(p)
+        if not ga or not gb:
+            break
+        ca = [sum(p[i] for p in ga) / len(ga) for i in range(3)]
+        cb = [sum(p[i] for p in gb) / len(gb) for i in range(3)]
+    return ca, cb
+
+
+def derive_mask(im):
+    """RGBA (W x W) -> (OUT x OUT 'L' mask or None, info dict). mask None = blob, info['reason'] says why."""
+    px = pix(im)
+    n = W * W
+    opaque = [p[3] >= 128 for p in px]
+    n_op = sum(opaque)
+    info = {"opaque": round(n_op / n, 3)}
+    if n_op < 0.03 * n:
+        info["reason"] = "empty"
+        return None, info
+    # photo / full-bleed art test
+    quant = {(p[0] >> 4, p[1] >> 4, p[2] >> 4) for p, o in zip(px[::3], opaque[::3]) if o}
+    info["colours"] = len(quant)
+    corners = sum(1 for i in (0, W - 1, n - W, n - 1) if opaque[i])
+    info["full_bleed"] = corners >= 3
+    if info["full_bleed"] and len(quant) > 40:
+        info["reason"] = "photo / full-bleed art"
+        return None, info
+    if len(quant) > 300:
+        info["reason"] = "too many colours (detailed art)"
+        return None, info
+
+    sil = Image.new("L", (W, W))
+    sil.putdata([255 if o else 0 for o in opaque])
+    sil = sil.filter(ImageFilter.MedianFilter(3))
+
+    samples = [p for p, o in zip(px[::2], opaque[::2]) if o]
+    ca, cb = kmeans2(samples)
+    sep = math.dist(ca, cb)
+    info["separation"] = round(sep, 1)
+    labels = []
+    for p, o in zip(px, opaque):
+        if not o:
+            labels.append(0)
+            continue
+        da = sum((p[i] - ca[i]) ** 2 for i in range(3))
+        db = sum((p[i] - cb[i]) ** 2 for i in range(3))
+        labels.append(1 if da <= db else 2)
+    cnt_a = labels.count(1)
+    cnt_b = labels.count(2)
+    minority = 1 if cnt_a < cnt_b else 2
+    mfrac = min(cnt_a, cnt_b) / max(1, n_op)
+    info["minority"] = round(mfrac, 3)
+    split = sep >= 100 and mfrac >= 0.015
+    cls = Image.new("L", (W, W))
+    cls.putdata([255 if l == minority else 0 for l in labels])
+    cls = cls.filter(ImageFilter.MedianFilter(5))
+    cls = ImageChops.multiply(cls, erode(sil, 2))
+
+    # plate = a (mostly) full rectangle/rounded square/circle background carrying a glyph
+    bbox = sil.getbbox()
+    plate = False
+    if bbox and split:
+        bw, bh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        fill_ratio = n_op / max(1, bw * bh)
+        # majority colour along the border of the bbox
+        edge = ImageChops.subtract(sil, erode(sil, max(3, W // 25)))
+        e_px = [l for l, v in zip(labels, pix(edge)) if v > 128]
+        maj = 3 - minority
+        edge_major = sum(1 for l in e_px if l == maj) / max(1, len(e_px))
+        info.update(fill_ratio=round(fill_ratio, 2), edge_major=round(edge_major, 2))
+        plate = bw >= 0.55 * W and bh >= 0.55 * W and fill_ratio >= 0.72 and (edge_major >= 0.7 or edge_major <= 0.3)
+    info["plate"] = plate
+
+    if plate:
+        ring = ImageChops.subtract(sil, erode(sil, max(3, round(W * 0.045))))
+        glyph = ImageChops.multiply(cls, erode(sil, max(3, round(W * 0.045)) + 3))
+        ink = ImageChops.lighter(ring, glyph)
+        info["style"] = "ring+glyph"
+    elif split:
+        ink = ImageChops.subtract(sil, dilate(cls, 0))
+        info["style"] = "silhouette-cutout"
+    else:
+        # flat single colour: cut detail lines where the luminance edges are strong
+        lum = im.convert("L")
+        edges = lum.filter(ImageFilter.FIND_EDGES).point(lambda v: 255 if v > 28 else 0)
+        edges = ImageChops.multiply(edges, erode(sil, 3))
+        ink = ImageChops.subtract(sil, dilate(edges, 1))
+        info["style"] = "silhouette-edges"
+    ink = ink.filter(ImageFilter.MedianFilter(3))
+
+    # smooth: upscale, blur, re-threshold (rounded vector-like edges, no staircase)
+    big = ink.resize((OUT, OUT), Image.BICUBIC).filter(ImageFilter.GaussianBlur(1.4)).point(lambda v: 255 if v > 118 else 0)
+
+    ink_n = sum(1 for v in pix(ink) if v > 128)
+    info["ink"] = round(ink_n / n_op, 3)
+    if ink_n < 0.04 * n_op:
+        info["reason"] = "nothing left after simplifying"
+        return None, info
+    per = ImageChops.subtract(ink, erode(ink, 1))
+    per_n = sum(1 for v in pix(per) if v > 128)
+    info["perimeter"] = round(per_n / max(1, ink_n), 3)
+    if info["perimeter"] > (0.24 if plate else 0.16):
+        info["reason"] = "noisy / very detailed art"
+        return None, info
+    if not plate and info["ink"] > 0.965 and info["style"] != "ring+glyph" and len(quant) > 3:
+        info["reason"] = "no inner detail (solid blob)"
+        return None, info
+    if plate and len(erode(cls, 0).getbbox() or ()) == 0:
+        info["reason"] = "plate without a glyph (solid blob)"
+        return None, info
+    return big, info
+
+
+def write_mask_png(mask, color, dest_root, name):
+    rgb = tuple(int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    for s in SIZES:
+        d = dest_root / f"{s}x{s}" / "apps"
+        d.mkdir(parents=True, exist_ok=True)
+        a = mask.resize((s, s), Image.LANCZOS)
+        out = Image.new("RGBA", (s, s), rgb + (0,))
+        out.putalpha(a)
+        out.save(d / f"{name}.png", optimize=True)
+
+
+# ---------------------------------------------------------------- theme layer
+def write_index(layer, name, base):
+    dirs = ["scalable/apps"] + [f"{s}x{s}/apps" for s in SIZES]
+    out = ["[Icon Theme]", f"Name={name}",
+           "Comment=GenoTheme monochrome app icons (generated by genotheme-mono-icons, do not edit)",
+           f"Inherits={base}", "Example=folder", "FollowsColorScheme=false",
+           "Directories=" + ",".join(dirs), ""]
+    out += ["[scalable/apps]", "Size=128", "Context=Applications", "Type=Scalable", "MinSize=8", "MaxSize=1024", ""]
+    for s in SIZES:
+        out += [f"[{s}x{s}/apps]", f"Size={s}", "Context=Applications", "Type=Fixed", ""]
+    (layer / "index.theme").write_text("\n".join(out))
+
+
+def sh(cmd, **kw):
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=120, **kw).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def refresh_kde(layer):
+    os.utime(layer, None)
+    if shutil.which("gtk-update-icon-cache"):
+        sh(["gtk-update-icon-cache", "-q", "-f", "-t", str(layer)])
+    if shutil.which("kbuildsycoca6"):
+        sh(["kbuildsycoca6"])
+    if shutil.which("dbus-send") and os.environ.get("DBUS_SESSION_BUS_ADDRESS", "x"):
+        for group in range(0, 6):
+            sh(["dbus-send", "--session", "--type=signal", "/KIconLoader", "org.kde.KIconLoader.iconChanged", f"int32:{group}"])
+
+
+def current_icon_theme():
+    if shutil.which("kreadconfig6"):
+        r = subprocess.run(["kreadconfig6", "--file", "kdeglobals", "--group", "Icons", "--key", "Theme"], capture_output=True, text=True)
+        return r.stdout.strip()
+    return ""
+
+
+def activate(theme):
+    prev = current_icon_theme()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    pf = STATE_DIR / "previous-theme"
+    if prev and prev != theme and not pf.exists():
+        pf.write_text(prev + "\n")
+    if shutil.which("kwriteconfig6"):
+        sh(["kwriteconfig6", "--file", "kdeglobals", "--group", "Icons", "--key", "Theme", theme])
+    helper = next((p for p in ("/usr/libexec/plasma-changeicons", shutil.which("plasma-changeicons") or "") if p and os.path.exists(p)), None)
+    if helper:
+        sh([helper, theme])
+
+
+# ---------------------------------------------------------------- run
+def file_sig(path):
+    st = os.stat(path)
+    return f"{st.st_size}:{int(st.st_mtime)}"
+
+
+ALGO = "2"   # bump when the derivation changes, so cached results are rebuilt
+LAYER_DIRS = ["scalable/apps"] + [f"{s}x{s}/apps" for s in SIZES]
+
+
+def layer_files(layer, name):
+    return [layer / d / f"{name}{e}" for d in LAYER_DIRS for e in (".svg", ".png")]
+
+
+def has_output(layer, name):
+    return any(f.exists() for f in layer_files(layer, name))
+
+
+def clear_output(layer, name):
+    for f in layer_files(layer, name):
+        f.unlink(missing_ok=True)
+
+
+def install_stock_colour(src, layer, name):
+    """Copy the app's own colour icon into the layer so nothing from GenoTheme-Icons shows through."""
+    clear_output(layer, name)
+    if str(src).lower().endswith((".svg", ".svgz")):
+        d = layer / "scalable/apps"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.svg").write_text(svg_text(src))
+        return
+    im = render(src, 256)
+    for s in SIZES:
+        d = layer / f"{s}x{s}/apps"
+        d.mkdir(parents=True, exist_ok=True)
+        im.resize((s, s), Image.LANCZOS).save(d / f"{name}.png", optimize=True)
+
+
+def copy_output(layer, src_name, dst_name):
+    clear_output(layer, dst_name)
+    ok = False
+    for f in layer_files(layer, src_name):
+        if f.exists():
+            t = f.with_name(dst_name + f.suffix)
+            shutil.copyfile(f, t)
+            ok = True
+    return ok
+
+
+def family_key(name):
+    last = name.split(".")[-1] if name.count(".") >= 2 else name
+    return last.lower()
+
+
+def run(args):
+    if args.delay:
+        time.sleep(args.delay)
+    color = args.color.lower()
+    layer = Path(args.layer or DATA_HOME / "icons" / args.theme)
+    roots = icon_roots()
+    stock, fallback = theme_chain(roots, args.base, args.theme)
+    themes = stock + fallback + [args.base]
+    log("stock icon themes:", " > ".join(stock), "| fallbacks:", " > ".join(fallback + [args.base]))
+    index = Index(roots, themes)
+    apps = scan_apps()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    mf = STATE_DIR / "manifest.json"
+    manifest = {}
+    if mf.exists() and not args.force:
+        try:
+            manifest = json.loads(mf.read_text())
+        except ValueError:
+            manifest = {}
+    if manifest.get("_color") != color or manifest.get("_algo") != ALGO:
+        manifest = {}
+    new = {"_color": color, "_algo": ALGO}
+    report = []
+    produced = set()      # names that have files in the layer
+    changed = False
+    geno_names = set(index.data[args.base])
+    geno_real = {}
+    for name in geno_names:
+        for sz, path, sym in index.data[args.base][name]:
+            if not sym:
+                geno_real.setdefault(os.path.realpath(path), set()).add(name)
+
+    for icon, info in sorted(apps.items()):
+        rec = {"icon": icon, "apps": sorted(set(info["names"]))[:4], "hidden": not info["visible"]}
+        if os.path.isabs(icon):
+            rec.update(status="colour", why="Icon= is an absolute file path to the app's own icon, nothing to override")
+            report.append(rec)
+            continue
+        if icon.endswith(EXTS):
+            icon = os.path.splitext(icon)[0]
+            rec["icon"] = icon
+        if icon.startswith(UI_PREFIXES):
+            rec.update(status="ui", why="Plasma UI / category icon name, left to GenoTheme")
+            report.append(rec)
+            continue
+        old = manifest.get(icon)
+        sym = index.find_symbolic(icon, stock + fallback)
+        if sym and str(sym).endswith((".svg", ".svgz")):
+            sig = f"sym:{sym}:{file_sig(sym)}"
+            dest = layer / "scalable/apps" / f"{icon}.svg"
+            if not (old and old.get("sig") == sig and dest.exists()):
+                if not args.dry_run:
+                    clear_output(layer, icon)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(recolour_svg(svg_text(sym), color))
+                changed = True
+            new[icon] = {"sig": sig, "kind": "symbolic"}
+            produced.add(icon)
+            rec.update(status="symbolic", why="recoloured the app's own symbolic icon", source=sym)
+            report.append(rec)
+            continue
+        src, th = index.find_color(icon, stock)
+        nonstock = None
+        if not src:
+            src, th = index.find_color(icon, fallback)
+            nonstock = th if src else None
+        geno_src = None
+        if not src:
+            g = index.find(args.base, icon)
+            if g:
+                src, th, geno_src = g, args.base, True
+        if not src:
+            rec.update(status="missing", why="no icon found anywhere")
+            report.append(rec)
+            continue
+        flag = ""
+        if nonstock:
+            flag = f"no stock icon, used {nonstock} instead"
+        elif geno_src:
+            flag = "no stock icon anywhere, used the GenoTheme/Daemon icon"
+        sig = f"mono:{src}:{file_sig(src)}:{color}"
+        if old and old.get("sig") == sig and old.get("kind") in ("mono", "blob") and (has_output(layer, icon) or (geno_src and old.get("kind") == "blob")):
+            kind, why = old["kind"], old.get("why", "")
+        else:
+            if geno_src and handmade_is_clean(src):
+                # already flat one-colour art: only recolour it
+                if not args.dry_run:
+                    clear_output(layer, icon)
+                    d = layer / "scalable/apps"
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / f"{icon}.svg").write_text(recolour_svg(svg_text(src), color))
+                kind, why, changed = "mono", "GenoTheme/Daemon icon recoloured (no stock icon)", True
+            else:
+                try:
+                    mask, dinfo = derive_mask(render(src, W))
+                except Exception as e:
+                    mask, dinfo = None, {"reason": f"could not render source ({type(e).__name__})"}
+                if mask is None:
+                    kind, why = "blob", dinfo.get("reason", "")
+                    if not args.dry_run and not geno_src:
+                        install_stock_colour(src, layer, icon)
+                    elif not args.dry_run:
+                        clear_output(layer, icon)
+                else:
+                    kind = "mono"
+                    why = f"derived from {th} icon ({dinfo.get('style')})"
+                    if not args.dry_run:
+                        clear_output(layer, icon)
+                        write_mask_png(mask, color, layer, icon)
+                changed = True
+        new[icon] = {"sig": sig, "kind": kind, "why": why}
+        produced.add(icon) if (kind == "mono" or (kind == "blob" and not geno_src)) else None
+        rec.update(status="mono" if kind == "mono" else "colour", why=why, source=src, note=flag)
+        if flag:
+            rec["nostock"] = flag
+        report.append(rec)
+
+    # alternate names of the same app, so no GenoTheme redesign leaks through inherit
+    app_icons = {r["icon"] for r in report}
+    aliased = {}
+    if not args.dry_run:
+        for r in report:
+            n = r["icon"]
+            if n not in produced:
+                continue
+            cand = set()
+            for grp in ALIAS_GROUPS:
+                if n in grp:
+                    cand |= grp
+            cand |= apps.get(n, {}).get("aliases", set())
+            key = family_key(n)
+            if len(key) >= 4:
+                for real in {os.path.realpath(p) for sz, p, sym in index.data[args.base].get(n, []) if not sym}:
+                    cand |= {m for m in geno_real.get(real, ()) if key in m.lower()}
+            cand = {m for m in cand if m != n and m in geno_names and m not in app_icons and not m.startswith(UI_PREFIXES)}
+            for m in sorted(cand):
+                if copy_output(layer, n, m):
+                    produced.add(m)
+                    aliased.setdefault(n, []).append(m)
+                    changed = True
+            if aliased.get(n):
+                r["aliases"] = aliased[n]
+
+    # drop layer files that are no longer wanted (apps removed, names that went back to GenoTheme)
+    removed = 0
+    if layer.is_dir():
+        for d in LAYER_DIRS:
+            dd = layer / d
+            if dd.is_dir():
+                for f in dd.iterdir():
+                    if f.stem not in produced and f.suffix in (".svg", ".png"):
+                        if not args.dry_run:
+                            f.unlink()
+                        removed += 1
+    if removed:
+        changed = True
+
+    if args.dry_run:
+        print_report(report)
+        return 0
+    layer.mkdir(parents=True, exist_ok=True)
+    first = not (layer / "index.theme").exists()
+    write_index(layer, args.theme, args.base)
+    mf.write_text(json.dumps(new, indent=1))
+    write_report(report, args, stock, fallback)
+    if changed or first or args.force:
+        refresh_kde(layer)
+    if args.activate:
+        activate(args.theme)
+    counts = {}
+    for r in report:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    log("done:", ", ".join(f"{k}={v}" for k, v in sorted(counts.items())), f"(removed {removed}, changed={changed})")
+    return 0
+
+
+def write_report(report, args, stock, fallback):
+    now = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    groups = {"mono": "Monochrome (derived from the app's stock icon)", "symbolic": "Monochrome (app's own symbolic icon)",
+              "colour": "Left in colour (the app's stock colour icon)", "ui": "Plasma UI / category icon names, left to GenoTheme",
+              "missing": "No icon found"}
+    lines = [f"# GenoTheme monochrome icons: {now}", "",
+             f"Stock icon themes: {' > '.join(stock)}. Fallbacks: {' > '.join(fallback + [args.base])}", ""]
+    nostock = [r for r in report if r.get("nostock")]
+    for k, title in groups.items():
+        rows = [r for r in report if r["status"] == k]
+        lines.append(f"## {title} ({len(rows)})")
+        lines.append("")
+        for r in rows:
+            extra = f": {r['why']}" if r.get("why") and k in ("colour", "missing", "mono", "ui") else ""
+            if r.get("nostock"):
+                extra += f" [{r['nostock']}]"
+            if r.get("aliases"):
+                extra += f" (also {', '.join(r['aliases'])})"
+            lines.append(f"- `{r['icon']}` ({', '.join(r['apps'])}){' [hidden entry]' if r.get('hidden') else ''}{extra}")
+        lines.append("")
+    lines.append(f"## Apps with no stock icon ({len(nostock)})")
+    lines.append("")
+    for r in nostock:
+        lines.append(f"- `{r['icon']}` ({', '.join(r['apps'])}): {r['nostock']}")
+    lines.append("")
+    (STATE_DIR / "report.md").write_text("\n".join(lines))
+    (STATE_DIR / "report.json").write_text(json.dumps(report, indent=1, default=str))
+
+
+def print_report(report):
+    for r in report:
+        print(f"{r['status']:10} {r['icon']}  {r.get('why', '')}")
+
+
+def status(args):
+    f = STATE_DIR / "report.md"
+    print(f.read_text() if f.exists() else "No report yet. Run: genotheme-mono-icons run")
+    return 0
+
+
+def undo(args):
+    pf = STATE_DIR / "previous-theme"
+    prev = pf.read_text().strip() if pf.exists() else args.fallback
+    if shutil.which("kwriteconfig6"):
+        sh(["kwriteconfig6", "--file", "kdeglobals", "--group", "Icons", "--key", "Theme", prev])
+    helper = next((p for p in ("/usr/libexec/plasma-changeicons", shutil.which("plasma-changeicons") or "") if p and os.path.exists(p)), None)
+    if helper:
+        sh([helper, prev])
+    log(f"icon theme set back to {prev}")
+    if args.purge:
+        layer = Path(args.layer or DATA_HOME / "icons" / args.theme)
+        shutil.rmtree(layer, ignore_errors=True)
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
+        if shutil.which("kbuildsycoca6"):
+            sh(["kbuildsycoca6"])
+        log("monochrome layer and its state deleted")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("run", "status", "undo"):
+        p = sub.add_parser(name)
+        p.add_argument("--color", default=DEFAULT_COLOR)
+        p.add_argument("--theme", default=DEFAULT_THEME)
+        p.add_argument("--base", default=DEFAULT_BASE)
+        p.add_argument("--layer", default=None)
+        if name == "run":
+            p.add_argument("--activate", action="store_true", help="make the mono theme the active icon theme")
+            p.add_argument("--force", action="store_true", help="regenerate everything")
+            p.add_argument("--dry-run", action="store_true")
+            p.add_argument("--delay", type=float, default=0, help="wait first, so a burst of installs is handled once")
+        if name == "undo":
+            p.add_argument("--purge", action="store_true")
+            p.add_argument("--fallback", default=DEFAULT_BASE)
+    args = ap.parse_args()
+    return {"run": run, "status": status, "undo": undo}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

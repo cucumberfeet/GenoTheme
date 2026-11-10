@@ -7,6 +7,10 @@
 #   ./install.sh --layout        copy files and apply only the panel layout and desktop wallpaper
 #   ./install.sh --restore-panels
 #                                put back the panel config saved before the first --apply/--layout
+#   ./install.sh --mono-icons    install the automatic monochrome app icons (GenoTheme-Mono layer,
+#                                tools/genotheme-mono-icons, a systemd user path unit + login run),
+#                                make them the active icon theme, and write an undo script into
+#                                ~/Backups/genotheme-mono-icons-<date>/undo.sh. --apply does this too.
 #
 # The panel layout is never written unless --apply, --layout or --restore-panels is passed.
 set -euo pipefail
@@ -22,13 +26,15 @@ LAYOUT_TEMPLATE="$T/look-and-feel/com.genocorp.genotheme/contents/layouts/org.kd
 APPLY=0
 LAYOUT=0
 RESTORE=0
+MONO=0
 for arg in "$@"; do
   case "$arg" in
     --apply) APPLY=1 ;;
     --layout) LAYOUT=1 ;;
     --restore-panels) RESTORE=1 ;;
+    --mono-icons) MONO=1 ;;
     -h|--help)
-      sed -n '2,12p' "$0"
+      sed -n '2,16p' "$0"
       exit 0
       ;;
     *)
@@ -142,6 +148,57 @@ refresh_icons() {
   fi
 }
 
+install_mono_icons() {
+  # Automatic monochrome app icons (tools/genotheme-mono-icons). Needs python3 + Pillow and ImageMagick or rsvg-convert.
+  if ! python3 -c 'import PIL' >/dev/null 2>&1; then
+    warn "Pillow (python3-pillow) is missing, so the monochrome app icons were not installed."
+    return 0
+  fi
+  if ! command -v magick >/dev/null 2>&1 && ! command -v rsvg-convert >/dev/null 2>&1; then
+    warn "ImageMagick (magick) or rsvg-convert is missing, so the monochrome app icons were not installed."
+    return 0
+  fi
+  local bk="$HOME/Backups/genotheme-mono-icons-$(date +%Y%m%d-%H%M%S)"
+  local prev_theme
+  prev_theme=$(kreadconfig6 --file kdeglobals --group Icons --key Theme 2>/dev/null || true)
+  [[ -z $prev_theme || $prev_theme == GenoTheme-Mono ]] && prev_theme=GenoTheme-Icons
+  local unitdir="$C/systemd/user" bindir="$HOME/.local/bin"
+  mkdir -p "$bk" "$unitdir" "$bindir"
+  [[ -f $C/kdeglobals ]] && cp -a "$C/kdeglobals" "$bk/kdeglobals"
+  [[ -d $D/icons/GenoTheme-Icons ]] && tar -C "$D/icons" -czf "$bk/GenoTheme-Icons.tar.gz" GenoTheme-Icons
+  [[ -d $D/icons/GenoTheme-Mono ]] && tar -C "$D/icons" -czf "$bk/GenoTheme-Mono.tar.gz" GenoTheme-Mono
+  # keep the installed GenoTheme-Icons (non-app icons, and the inherit base of the mono layer) current
+  rm -rf "$D/icons/GenoTheme-Icons"
+  cp -a "$T/icons/GenoTheme-Icons" "$D/icons/"
+  install -m755 "$ROOT/tools/genotheme-mono-icons" "$bindir/genotheme-mono-icons"
+  install -m644 "$ROOT/tools/mono-icons/genotheme-mono-icons.service" "$ROOT/tools/mono-icons/genotheme-mono-icons.path" "$unitdir/"
+  cat > "$bk/undo.sh" <<UNDO
+#!/usr/bin/env bash
+# Undo the GenoTheme monochrome app icons: stop the units, go back to the previous icon theme,
+# remove the generated layer and the tool, put back the GenoTheme-Icons copy saved here.
+set -u
+systemctl --user disable --now genotheme-mono-icons.path genotheme-mono-icons.service 2>/dev/null
+"$bindir/genotheme-mono-icons" undo --purge --fallback $prev_theme 2>/dev/null || {
+  kwriteconfig6 --file kdeglobals --group Icons --key Theme $prev_theme
+  rm -rf "$D/icons/GenoTheme-Mono" "$D/genotheme-mono-icons"
+}
+rm -f "$unitdir/genotheme-mono-icons.service" "$unitdir/genotheme-mono-icons.path" "$bindir/genotheme-mono-icons"
+systemctl --user daemon-reload
+[[ -f "$bk/GenoTheme-Icons.tar.gz" ]] && { rm -rf "$D/icons/GenoTheme-Icons"; tar -C "$D/icons" -xzf "$bk/GenoTheme-Icons.tar.gz"; }
+kwriteconfig6 --file kdeglobals --group Icons --key Theme $prev_theme
+kbuildsycoca6 >/dev/null 2>&1
+for g in 0 1 2 3 4 5; do dbus-send --session --type=signal /KIconLoader org.kde.KIconLoader.iconChanged int32:\$g 2>/dev/null; done
+echo "Monochrome app icons removed. Log out and in (or restart plasmashell) if some icons still look blue."
+UNDO
+  chmod +x "$bk/undo.sh"
+  systemctl --user daemon-reload || true
+  "$bindir/genotheme-mono-icons" run --activate --force || warn "genotheme-mono-icons failed, see the message above"
+  systemctl --user enable --now genotheme-mono-icons.path >/dev/null 2>&1 || warn "could not enable the genotheme-mono-icons path unit"
+  systemctl --user enable genotheme-mono-icons.service >/dev/null 2>&1 || true
+  echo "Monochrome app icons installed. Report: $HOME/.local/share/genotheme-mono-icons/report.md"
+  echo "Undo with: $bk/undo.sh"
+}
+
 kvantum_missing() {
   if command -v kvantummanager >/dev/null 2>&1; then
     return 1
@@ -244,6 +301,12 @@ apply_layout() {
   "${cmd[@]}"
 }
 
+if [[ $MONO == 1 && $APPLY == 0 && $LAYOUT == 0 && $RESTORE == 0 ]]; then
+  # only the monochrome app icons: leave the rest of the profile alone
+  install_mono_icons
+  exit 0
+fi
+
 install_files
 
 if [[ $RESTORE == 1 ]]; then
@@ -266,6 +329,7 @@ if [[ $APPLY == 1 ]]; then
   apply_appearance
   python3 "$ROOT/tools/firefox_theme.py" apply --home "$HOME" --theme "$ROOT/themes/firefox/GenoThemeFox"
   refresh_icons
+  install_mono_icons
   echo "GenoTheme applied, including the panel layout, wallpaper, fonts, KWin and GenoThemeFox."
   echo "Restart already-open Qt apps to pick up Kvantum. Restart Firefox completely to pick up GenoThemeFox."
 fi
@@ -300,7 +364,7 @@ if [[ $APPLY == 1 || $LAYOUT == 1 ]]; then
   reapply_layout_live
 fi
 
-if [[ $APPLY == 0 && $LAYOUT == 0 ]]; then
+if [[ $APPLY == 0 && $LAYOUT == 0 && $MONO == 0 ]]; then
   echo "Files only. The running desktop, panel layout and Firefox profile were not changed."
   echo "Apply with: ./install.sh --apply"
 fi
